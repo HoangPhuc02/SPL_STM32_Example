@@ -63,6 +63,7 @@ $(BUILD_DIR)/$(PROJECT).elf: $(OBJS)
 $(BUILD_DIR)/$(PROJECT).bin: $(BUILD_DIR)/$(PROJECT).elf
 	$(OBJCOPY) -O binary $< $@
 
+
 # Flash (using openocd)
 flash: all
 	openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program $(BUILD_DIR)/$(PROJECT).bin 0x08000000 verify reset exit"
@@ -70,4 +71,7 @@ flash: all
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean flash
+get_stlink_id: 
+	openocd -f interface/stlink.cfg -c "adapter serial ? " -c "exit"
+	
+.PHONY: all clean flash get_stlink_id

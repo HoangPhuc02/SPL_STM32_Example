@@ -51,30 +51,30 @@ g_pfnVectors:
     .word   DMA1_Channel6_IRQHandler /* 0x80: DMA1 Channel6 */
     .word   DMA1_Channel7_IRQHandler /* 0x84: DMA1 Channel7 */
     .word   ADC1_2_IRQHandler       /* 0x88: ADC1 and   ADC2 global interrupt */
-    ; .word   USB_HP_CAN1_TX_IRQHandler /* 0x8C: USB High Priority or CAN1 TX */
-    ; .word   USB_LP_CAN1_RX0_IRQHandler /* 0x90: USB Low Priority or CAN1 RX0 */
-    ; .word   CAN1_RX1_IRQHandler     /* 0x94: CAN1 RX1 */
-    ; .word   CAN1_SCE_IRQHandler     /* 0x98: CAN1 SCE */
-    ; .word   EXTI9_5_IRQHandler       /* 0x9C: External  Line[9:5] */
-    ; .word   TIM1_BRK_IRQHandler      /* 0xA0: TIM1 Break */
-    ; .word   TIM1_UP_IRQHandler       /* 0xA4: TIM1 Update */
-    ; .word   TIM1_TRG_COM_IRQHandler  /* 0xA8: TIM1 Trigger and Commutation */
-    ; .word   TIM1_CC_IRQHandler       /* 0xAC: TIM1 Capture Compare */
-    ; .word   TIM2_IRQHandler          /* 0xB0: TIM2 global interrupt */
-    ; .word   TIM3_IRQHandler          /* 0xB4: TIM3 global interrupt */
-    ; .word   TIM4_IRQHandler          /* 0xB8: TIM4 global interrupt */
-    ; .word   I2C1_EV_IRQHandler       /* 0xBC: I2C1 Event */
-    ; .word   I2C1_ER_IRQHandler       /* 0xC0: I2C1 Error */
-    ; .word   I2C2_EV_IRQHandler       /* 0xC4: I2C2 Event */
-    ; .word   I2C2_ER_IRQHandler       /* 0xC8: I2C2 Error */
-    ; .word   SPI1_IRQHandler          /* 0xCC: SPI1 global interrupt */
-    ; .word   SPI2_IRQHandler          /* 0xD0: SPI2 global interrupt */
-    ; .word   USART1_IRQHandler        /* 0xD4: USART1 global interrupt */
-    ; .word   USART2_IRQHandler        /* 0xD8: USART2 global interrupt */
-    ; .word   USART3_IRQHandler        /* 0xDC: USART3 global interrupt */
-    ; .word   EXTI15_10_IRQHandler     /* 0xE0: External Line[15:10] */
-    ; .word   RTCAlarm_IRQHandler      /* 0xE4: RTC Alarm through EXTI Line */
-    ; .word   USBWakeUp_IRQHandler     /* 0xE8: USB Wakeup from suspend */
+    .word   USB_HP_CAN1_TX_IRQHandler /* 0x8C: USB High Priority or CAN1 TX */
+    .word   USB_LP_CAN1_RX0_IRQHandler /* 0x90: USB Low Priority or CAN1 RX0 */
+    .word   CAN1_RX1_IRQHandler     /* 0x94: CAN1 RX1 */
+    .word   CAN1_SCE_IRQHandler     /* 0x98: CAN1 SCE */
+    .word   EXTI9_5_IRQHandler       /* 0x9C: External  Line[9:5] */
+    .word   TIM1_BRK_IRQHandler      /* 0xA0: TIM1 Break */
+    .word   TIM1_UP_IRQHandler       /* 0xA4: TIM1 Update */
+    .word   TIM1_TRG_COM_IRQHandler  /* 0xA8: TIM1 Trigger and Commutation */
+    .word   TIM1_CC_IRQHandler       /* 0xAC: TIM1 Capture Compare */
+    .word   TIM2_IRQHandler          /* 0xB0: TIM2 global interrupt */
+    .word   TIM3_IRQHandler          /* 0xB4: TIM3 global interrupt */
+    .word   TIM4_IRQHandler          /* 0xB8: TIM4 global interrupt */
+    .word   I2C1_EV_IRQHandler       /* 0xBC: I2C1 Event */
+    .word   I2C1_ER_IRQHandler       /* 0xC0: I2C1 Error */
+    .word   I2C2_EV_IRQHandler       /* 0xC4: I2C2 Event */
+    .word   I2C2_ER_IRQHandler       /* 0xC8: I2C2 Error */
+    .word   SPI1_IRQHandler          /* 0xCC: SPI1 global interrupt */
+    .word   SPI2_IRQHandler          /* 0xD0: SPI2 global interrupt */
+    .word   USART1_IRQHandler        /* 0xD4: USART1 global interrupt */
+    .word   USART2_IRQHandler        /* 0xD8: USART2 global interrupt */
+    .word   USART3_IRQHandler        /* 0xDC: USART3 global interrupt */
+    .word   EXTI15_10_IRQHandler     /* 0xE0: External Line[15:10] */
+    .word   RTCAlarm_IRQHandler      /* 0xE4: RTC Alarm through EXTI Line */
+    .word   USBWakeUp_IRQHandler     /* 0xE8: USB Wakeup from suspend */
 
 
 /* ========= Default Handler (vòng lặp vô hạn) ========= */

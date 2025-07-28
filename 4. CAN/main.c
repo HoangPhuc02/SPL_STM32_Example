@@ -161,17 +161,17 @@ void CAN_Config(void)
     CAN_DeInit(CAN1);
     CAN_StructInit(&CAN_InitStructure);
 
-    CAN_InitStructure.CAN_TTCM = DISABLE;
-    CAN_InitStructure.CAN_ABOM = DISABLE;
-    CAN_InitStructure.CAN_AWUM = DISABLE;
-    CAN_InitStructure.CAN_NART = ENABLE;
-    CAN_InitStructure.CAN_RFLM = DISABLE;
-    CAN_InitStructure.CAN_TXFP = DISABLE;
-    CAN_InitStructure.CAN_Mode = CAN_Mode_Normal; // Use CAN_Mode_LoopBack for self-test
-    CAN_InitStructure.CAN_SJW = CAN_SJW_1tq;
-    CAN_InitStructure.CAN_BS1 = CAN_BS1_8tq;
-    CAN_InitStructure.CAN_BS2 = CAN_BS2_7tq;
-    CAN_InitStructure.CAN_Prescaler = 4; // Set baudrate (e.g., 250kbps for 36MHz APB1)
+    CAN_InitStructure.CAN_TTCM = DISABLE;      // TTCM: Time Triggered Communication Mode. DISABLE: không dùng chế độ truyền theo thời gian (ít dùng trong ứng dụng phổ thông)
+    CAN_InitStructure.CAN_ABOM = DISABLE;      // ABOM: Automatic Bus-Off Management. DISABLE: không tự động phục hồi khi bus-off (lỗi bus CAN)
+    CAN_InitStructure.CAN_AWUM = DISABLE;      // AWUM: Automatic WakeUp Mode. DISABLE: không tự động đánh thức khi có hoạt động trên bus CAN
+    CAN_InitStructure.CAN_NART = ENABLE;       // NART: No Automatic Retransmission. ENABLE: không tự động gửi lại nếu gửi thất bại (giúp kiểm soát việc gửi)
+    CAN_InitStructure.CAN_RFLM = DISABLE;      // RFLM: Receive FIFO Locked Mode. DISABLE: FIFO không bị khóa, dữ liệu cũ sẽ bị ghi đè nếu đầy
+    CAN_InitStructure.CAN_TXFP = DISABLE;      // TXFP: Transmit FIFO Priority. DISABLE: ưu tiên gửi theo thứ tự yêu cầu (không theo độ ưu tiên ID)
+    CAN_InitStructure.CAN_Mode = CAN_Mode_Normal; // Chế độ hoạt động CAN. CAN_Mode_Normal: chế độ bình thường. Có thể dùng CAN_Mode_LoopBack để tự kiểm tra
+    CAN_InitStructure.CAN_SJW = CAN_SJW_1tq;   // SJW: Synchronization Jump Width. Độ rộng nhảy đồng bộ, thường chọn 1tq
+    CAN_InitStructure.CAN_BS1 = CAN_BS1_8tq;  // BS1: Bit Segment 1. Độ dài bit segment 1, ảnh hưởng đến tốc độ và độ ổn định CAN
+    CAN_InitStructure.CAN_BS2 = CAN_BS2_7tq;  // BS2: Bit Segment 2. Độ dài bit segment 2, ảnh hưởng đến tốc độ và độ ổn định CAN
+    CAN_InitStructure.CAN_Prescaler = 4;      // Prescaler: hệ số chia xung clock cho CAN. Giá trị này quyết định baudrate CAN (ví dụ: 250kbps với APB1=36MHz)
 
     CAN_Init(CAN1, &CAN_InitStructure);
 

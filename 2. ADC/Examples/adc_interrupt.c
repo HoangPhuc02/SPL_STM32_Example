@@ -1,189 +1,190 @@
-/**********************************************************
-* File Name   : adc_interrupt
-* Description : ADC with interrupt example
-* Details     : Example of using ADC with interrupt-based reading
-* Version     : 1.0.0
-* Date        : 30/06/2025
- **********************************************************/
-
+#include "stm32f10x_flash.h"
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
-#include "stm32f10x_tim.h"
 #include "stm32f10x_adc.h"
-#include "stm32f10x_dma.h"
-#include "misc.h" // For NVIC configuration
+#include "misc.h"
+#include "stm32f10x_tim.h"
+
 #include <stdint.h>
 
-volatile uint16_t adcValue = 0;
-volatile uint32_t it_count = 0;
-volatile uint32_t dma_count = 0;
-volatile uint16_t buffer[8] = {0}; // Buffer for DMA ADC values, marked volatile for debugging & watch
-void delay(uint16_t time)
+/**
+ * Example: Single Channel ADC with Software Trigger in Oneshot Mode
+ * 
+ * This example demonstrates:
+ * 1. Single channel ADC conversion
+ * 2. Software trigger to start conversions
+ * 3. Oneshot mode (need to trigger each conversion)
+ * 4. Polling method to check when conversion is complete
+ */
+volatile uint8_t adc_counter = 0;
+volatile uint16_t adc_value[2] = {0};
+uint32_t a = 0;
+volatile uint32_t it_counter = 1;
+volatile uint32_t irq_time_start = 0;
+volatile uint32_t irq_time_end = 0;
+volatile uint32_t irq_time_diff = 0;
+void ADC1_2_IRQHandler(void)
 {
-    TIM_SetCounter(TIM2, 0);
-    while (TIM_GetCounter(TIM2) < time)
-        ;
+    it_counter++;
+    irq_time_start = TIM_GetCounter(TIM2); // Bắt đầu đo thời gian
+    if (ADC_GetITStatus(ADC1, ADC_IT_EOC) != RESET) 
+    {
+        GPIO_SetBits(GPIOC, GPIO_Pin_13); // Turn on LED for visual feedback
+        adc_value[adc_counter] = ADC_GetConversionValue(ADC1);
+        adc_counter = (++adc_counter == 2) ? 0 : adc_counter; // Toggle between 0 and 1
+
+        ADC_RegularChannelConfig(ADC1, adc_counter, 1, ADC_SampleTime_55Cycles5);
+        // Clear the ADC interrupt flag
+        ADC_ClearITPendingBit(ADC1, ADC_IT_EOC);
+        GPIO_ResetBits(GPIOC, GPIO_Pin_13); // Turn off LED after reading
+    }
+    irq_time_end = TIM_GetCounter(TIM2); // Kết thúc đo thời gian
+    if (irq_time_end >= irq_time_start)
+        irq_time_diff = irq_time_end - irq_time_start;
+    else
+        irq_time_diff = (0xFFFF - irq_time_start) + irq_time_end + 1;
 }
-
-void Timer_Init(void)
+void TIM2_TimeBase_Config(void)
 {
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
-
-    TIM_TimeBaseInitTypeDef tim;
-    tim.TIM_ClockDivision = TIM_CKD_DIV1;
-    tim.TIM_CounterMode = TIM_CounterMode_Up;
-    tim.TIM_Period = 0xFFFF;
-    tim.TIM_Prescaler = 8000 - 1; // Prescaler for 1ms tick
-    TIM_TimeBaseInit(TIM2, &tim);
+    TIM_TimeBaseStructure.TIM_Period = 0xFFFF;
+    TIM_TimeBaseStructure.TIM_Prescaler = 71; // 72MHz/72 = 1MHz, 1 tick = 1us
+    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
     TIM_Cmd(TIM2, ENABLE);
 }
+void GPIO_Config(void);
+void ADC_Config(void);
+void SystemClock_Config(void);
+void NVIC_Config(void);
 
-void TimerAdc_Init(void)
+
+
+// Simple delay function
+void delay_ms(uint32_t ms)
 {
-    // Clock for ADC pin
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
+    uint32_t i;
+    for(i = 0; i < ms * 12000; i++) // Approximate for 72MHz system clock
+    {
+        __NOP();
+    }
+}
+
+uint16_t Read_ADC(void)
+{
+    // Start ADC conversion
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+    
+    // Wait for conversion to complete
+    while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+    
+    // Read and return ADC value
+    return ADC_GetConversionValue(ADC1);
+}
+
+int main(void)
+{
+    // Configure system clock to 72MHz
+    SystemClock_Config();
+
+    // Initialize GPIO, NVIC, TIM2, and ADC
+    GPIO_Config();
+    NVIC_Config();
+    TIM2_TimeBase_Config(); // Khởi tạo timer đo thời gian
+    ADC_Config();
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE); // Start the first conversion
+    GPIO_SetBits(GPIOC, GPIO_Pin_14); // Turn on another LED for visual feedback
+
+    while(1)
+    {
+        a++;
+        // Có thể debug giá trị irq_time_diff để biết thời gian thực thi của ngắt ADC (đơn vị: us)
+    }
+}
+
+void GPIO_Config(void)
+{
+    // Configure analog input pin (PA0)
+    GPIO_InitTypeDef GPIO_InitStructure;
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
+    
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1; // PA0 and PA1
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+    // Configure an LED for visual feedback (PC13 on most Blue Pill boards)
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13 | GPIO_Pin_14;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
 }
 
-void Adc_PinConfig(void)
+void ADC_Config(void)
 {
-    GPIO_InitTypeDef gpio;
-    gpio.GPIO_Pin = GPIO_Pin_0; // ADC Channel 0
-    gpio.GPIO_Mode = GPIO_Mode_AIN;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz; // Not used for analog mode
-    GPIO_Init(GPIOA, &gpio);
-}
+    // Enable ADC1 clock
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
 
-void NVIC_Config(void)
-{
-    NVIC_InitTypeDef nvic;
-    nvic.NVIC_IRQChannel = ADC1_2_IRQn;
-    nvic.NVIC_IRQChannelPreemptionPriority = 0;
-    nvic.NVIC_IRQChannelSubPriority = 0;
-    nvic.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&nvic);
-
-    nvic.NVIC_IRQChannel = DMA1_Channel1_IRQn;
-    nvic.NVIC_IRQChannelPreemptionPriority = 2;
-    NVIC_Init(&nvic);
-}
-
-void Adc_Config(void)
-{
-    ADC_InitTypeDef adc;
-    adc.ADC_Mode = ADC_Mode_Independent;
-    adc.ADC_ScanConvMode = DISABLE;
-    adc.ADC_ContinuousConvMode = ENABLE;
-    adc.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
-    adc.ADC_DataAlign = ADC_DataAlign_Right;
-    adc.ADC_NbrOfChannel = 1;
-
-    ADC_Init(ADC1, &adc);
+    // Set ADC clock = PCLK2/6 = 72MHz/6 = 12MHz (max for STM32F1 ADC)
+    RCC_ADCCLKConfig(RCC_PCLK2_Div6);
+    
+    // ADC configuration
+    ADC_InitTypeDef ADC_InitStructure;
+    ADC_InitStructure.ADC_Mode = ADC_Mode_Independent;
+    ADC_InitStructure.ADC_ScanConvMode = DISABLE;           // Single channel, no scan needed
+    ADC_InitStructure.ADC_ContinuousConvMode = ENABLE;     // Oneshot mode
+    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None; // Software trigger
+    ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
+    ADC_InitStructure.ADC_NbrOfChannel = 2;                 // 1 channel
+    ADC_Init(ADC1, &ADC_InitStructure);
+    
+    // Configure channel
     ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 1, ADC_SampleTime_55Cycles5);
-    
-    /* Enable ADC interrupt */
-    ADC_ITConfig(ADC1, ADC_IT_EOC, ENABLE);
-    ADC_DMACmd(ADC1, ENABLE); // Enable DMA for ADC
-    /* Enable ADC1 */
+    ADC_ITConfig(ADC1, ADC_IT_EOC, ENABLE); // Enable EOC interrupt
+    // Calibrate ADC
     ADC_Cmd(ADC1, ENABLE);
-    
-    /* Calibrate ADC */
     ADC_ResetCalibration(ADC1);
     while(ADC_GetResetCalibrationStatus(ADC1));
     ADC_StartCalibration(ADC1);
     while(ADC_GetCalibrationStatus(ADC1));
 }
 
-void DMA_Config(void)
+void SystemClock_Config(void)
 {
-    // Configure DMA for ADC
-    DMA_InitTypeDef dma;
-    
-    // Reset DMA1 Channel1 config
-    DMA_DeInit(DMA1_Channel1);
-    
-    // Basic settings
-    dma.DMA_Mode = DMA_Mode_Circular;           // Circular mode for continuous updates
-    dma.DMA_DIR = DMA_DIR_PeripheralSRC;        // Peripheral to memory
-    dma.DMA_M2M = DMA_M2M_Disable;              // Not memory-to-memory
-    dma.DMA_Priority = DMA_Priority_High;       // High priority
-    dma.DMA_BufferSize = 8;                     // Number of ADC channels to read
-    
-    // Peripheral settings
-    dma.DMA_PeripheralBaseAddr = (uint32_t)&ADC1->DR;  // ADC data register address
-    dma.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;  // 16-bit data
-    dma.DMA_PeripheralInc = DMA_PeripheralInc_Disable; // Don't increment peripheral address
-    
-    // Memory settings
-    dma.DMA_MemoryInc = DMA_MemoryInc_Enable;          // Increment memory address
-    dma.DMA_MemoryBaseAddr = (uint32_t)buffer;         // Buffer address
-    dma.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;  // 16-bit data
-    
-    // Initialize DMA
-    DMA_Init(DMA1_Channel1, &dma);
-    
-    // Enable DMA Transfer Complete interrupt
-    DMA_ITConfig(DMA1_Channel1, DMA_IT_TC, ENABLE);
-    DMA_Cmd(DMA1_Channel1, ENABLE);
-    
-}
-
-/* ADC Interrupt Handler */
-void ADC1_2_IRQHandler(void)
-{
-    if (ADC_GetITStatus(ADC1, ADC_IT_EOC) != RESET)
+    ErrorStatus HSEStartUpStatus;
+    RCC_DeInit();
+    RCC_HSEConfig(RCC_HSE_ON);
+    HSEStartUpStatus = RCC_WaitForHSEStartUp();
+    if(HSEStartUpStatus == SUCCESS)
     {
-        // Read the converted value
-        adcValue = ADC_GetConversionValue(ADC1);
-        it_count++;
-        if(it_count > 16)
-        {
-            NVIC_DisableIRQ(ADC1_2_IRQn);
-        }
-        // Clear the ADC interrupt flag
-        ADC_ClearITPendingBit(ADC1, ADC_IT_EOC);
+        FLASH_SetLatency(FLASH_Latency_2);
+        FLASH_PrefetchBufferCmd(FLASH_PrefetchBuffer_Enable);
+        RCC_HCLKConfig(RCC_SYSCLK_Div1);
+        RCC_PCLK1Config(RCC_HCLK_Div2);
+        RCC_PCLK2Config(RCC_HCLK_Div1);
+        RCC_PLLConfig(RCC_PLLSource_HSE_Div1, RCC_PLLMul_9);
+        RCC_PLLCmd(ENABLE);
+        while(RCC_GetFlagStatus(RCC_FLAG_PLLRDY) == RESET);
+        RCC_SYSCLKConfig(RCC_SYSCLKSource_PLLCLK);
+        while(RCC_GetSYSCLKSource() != 0x08);
+    }
+    else
+    {
+        while(1);
     }
 }
 
-void DMA1_Channel1_IRQHandler(void)
+void NVIC_Config(void)
 {
-    // Check if the DMA transfer is complete
-    if (DMA_GetITStatus(DMA1_IT_TC1))
-    {
-        // Set flag to indicate conversion is complete
-        //  ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 2, ADC_SampleTime_28Cycles5); // ADC Channel 1 (PA1)
-        dma_count++;
-        if(dma_count > 4)
-        {
-            NVIC_DisableIRQ(DMA1_Channel1_IRQn);
-        }
-        // ADC_Cmd(ADC1, DISABLE);
-        // Clear the DMA transfer complete flag
-        DMA_ClearITPendingBit(DMA1_IT_TC1);
-    }
-}
-
-int main(void)
-{
-    volatile uint16_t voltageInMv = 0;
+    NVIC_InitTypeDef NVIC_InitStructure;
     
-    Timer_Init();       // Initialize Timer for delay
-    TimerAdc_Init();    // Initialize Timer for ADC
-    Adc_PinConfig();    // Configure ADC pin
-    NVIC_Config();      // Configure NVIC for ADC interrupts
-    Adc_Config();       // Configure ADC
-    DMA_Config();      // Configure DMA
-    /* Start ADC conversion */
-    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
-    
-    while (1)
-    {
-        // Convert ADC value to millivolts (assuming 3.3V reference)
-        voltageInMv = (adcValue * 3300) / 4095;
-        
-        // Add a short delay
-        delay(100);
-    }
+    // Enable ADC1 interrupt
+    NVIC_InitStructure.NVIC_IRQChannel = ADC1_2_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&NVIC_InitStructure);
 }
