@@ -10,7 +10,7 @@
  *
  * Description:
  * - Reads analog value from PA0 using ADC1
- * - ADC conversion is automatically triggered by Timer3 (TIM1_TRGO)
+ * - ADC conversion is automatically triggered by Timer3 (TIM3_TRGO)
  * - Uses oneshot mode - each trigger initiates one conversion
  * - ADC value is read using interrupt method
  * - LED on PC13 toggles on each ADC conversion completion
@@ -29,12 +29,12 @@
  * - Signal monitoring and analysis
  */
 
-void TIM1_CC_IRQHandler(void)
+void TIM3_IRQHandler(void)
 {
-    if (TIM_GetITStatus(TIM1, TIM_IT_CC1) != RESET)
+    if (TIM_GetITStatus(TIM3, TIM_IT_Update) != RESET)
     {
-        TIM_ClearITPendingBit(TIM1, TIM_IT_CC1);
-        GPIOC->ODR ^= GPIO_Pin_14;  // Toggle LED PC14
+        TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+        GPIOC->ODR ^= GPIO_Pin_14;  // Toggle LED PC13
     }
 }
 
@@ -51,7 +51,7 @@ void ADC1_2_IRQHandler(void)
 }
 void SystemClock_Config(void);
 void ADC_Config(void);
-void TIM1_Config(void);
+void TIM3_Config(void);
 void GPIO_Config(void);
 void NVIC_Config(void);
 
@@ -62,7 +62,7 @@ int main(void)
     
     // Initialize GPIO, Timer1 và ADC
     GPIO_Config();
-    TIM1_Config();
+    TIM3_Config();
     NVIC_Config();
     ADC_Config();
     ADC_ExternalTrigConvCmd(ADC1, ENABLE); // Enable external trigger for ADC conversion
@@ -86,7 +86,7 @@ void NVIC_Config(void)
     NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
 
-    NVIC_InitStructure.NVIC_IRQChannel = TIM1_CC_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannel = TIM3_IRQn;
     NVIC_Init(&NVIC_InitStructure);
 }
 
@@ -128,7 +128,7 @@ void ADC_Config(void)
     ADC_InitStructure.ADC_Mode = ADC_Mode_Independent;
     ADC_InitStructure.ADC_ScanConvMode = DISABLE;           // Single channel, no scan needed
     ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;     // Oneshot mode
-    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_T1_CC1; // Hardware trigger on TIM1 TRGO
+    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_T3_TRGO; // Hardware trigger on TIM3 TRGO
     ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
     ADC_InitStructure.ADC_NbrOfChannel = 1;                 // 1 channel
     ADC_Init(ADC1, &ADC_InitStructure);
@@ -150,7 +150,7 @@ void ADC_Config(void)
 
 
 /**
- * @brief Configure Timer3 to generate trigger signals for ADC via TIM1_TRGO
+ * @brief Configure Timer3 to generate trigger signals for ADC via TIM3_TRGO
  * 
  * This function sets up Timer3 with the following specifications:
  * - Clock source: APB1 (36MHz)
@@ -175,38 +175,32 @@ void ADC_Config(void)
  * Counter clock = 72MHz / 200 = 360kHz
  * Output frequency = 360kHz / 7200 = 50Hz
  */
-void TIM1_Config(void)
+void TIM3_Config(void)
 {
     TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
-    TIM_OCInitTypeDef TIM_OCInitStructure;
 
-    // Bật clock cho TIM1
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM1, ENABLE);
+    /* Enable Timer3 clock */
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
 
-    // Cấu hình timer: ví dụ 1ms (1kHz) trigger
-    TIM_TimeBaseStructure.TIM_Period = 7199; // (72MHz/7200) - 1 = 9999, ở đây chọn 7199 cho 10kHz, 7199 cho 1kHz
-    TIM_TimeBaseStructure.TIM_Prescaler = 199; // 72MHz/200 = 360kHz, 360kHz/7200 = 50Hz
+    /* Configure timer base settings */
+    TIM_TimeBaseStructure.TIM_Period = 7199;        // ARR value
+    TIM_TimeBaseStructure.TIM_Prescaler = 199;      // PSC value
     TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
     TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
-    TIM_TimeBaseInit(TIM1, &TIM_TimeBaseStructure);
+    TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure);
 
-    // Cấu hình Output Compare cho TIM1 Channel 1
-    TIM_OCInitStructure.TIM_OCMode =  TIM_OCMode_PWM2;
-    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
-    // TIM_OCInitStructure.TIM_OutputNState = TIM_OutputNState_Disable;
-    TIM_OCInitStructure.TIM_Pulse = 3600; // 50% duty
-    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_Low;
-    TIM_OC1Init(TIM1, &TIM_OCInitStructure);
-    TIM_OC1PreloadConfig(TIM1, TIM_OCPreload_Enable);
-    
-    TIM_ARRPreloadConfig(TIM1, ENABLE);
+    /* Enable ARR preload to ensure smooth period updates */
+    TIM_ARRPreloadConfig(TIM3, ENABLE);
 
-    // // Cho phép TIM1 tạo trigger cho ADC (TRGO)
-    TIM_SelectOutputTrigger(TIM1, TIM_TRGOSource_OC1Ref); // hoặc TIM_TRGOSource_OC1 nếu muốn trigger theo compare
-    TIM_ITConfig(TIM1, TIM_IT_CC1, ENABLE); // Enable update interrupt for TIM1
-    // Bật TIM1
-    TIM_Cmd(TIM1, ENABLE);
-    TIM_CtrlPWMOutputs(TIM1, ENABLE); // Bắt buộc với TIM1 (advanced timer)
+    /* Configure Timer3 TRGO to trigger ADC conversion */
+    TIM_SelectOutputTrigger(TIM3, TIM_TRGOSource_Update);
+
+    /* Optional: Enable timer interrupt for debugging
+    TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);
+    NVIC_EnableIRQ(TIM3_IRQn); */
+
+    /* Start Timer3 */
+    TIM_Cmd(TIM3, ENABLE);
 }
 
 void GPIO_Config(void)
@@ -225,12 +219,4 @@ void GPIO_Config(void)
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOC, &GPIO_InitStructure);
-
-    //
-    /* Configure PA8 (TIM1_CH1) as alternate function push-pull */
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_8;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;     // Alternate function push-pull
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;   // High speed for clean edges
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
 }

@@ -191,11 +191,11 @@ void TIM1_Config(void)
     TIM_TimeBaseInit(TIM1, &TIM_TimeBaseStructure);
 
     // Cấu hình Output Compare cho TIM1 Channel 1
-    TIM_OCInitStructure.TIM_OCMode =  TIM_OCMode_PWM2;
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM2;
     TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
     // TIM_OCInitStructure.TIM_OutputNState = TIM_OutputNState_Disable;
     TIM_OCInitStructure.TIM_Pulse = 3600; // 50% duty
-    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_Low;
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
     TIM_OC1Init(TIM1, &TIM_OCInitStructure);
     TIM_OC1PreloadConfig(TIM1, TIM_OCPreload_Enable);
     
