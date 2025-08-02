@@ -49,16 +49,34 @@
             }
         },
         {
-            "name": "DIO debug",
+            "name": "GPIO debug",
             "type": "cortex-debug",
             "cwd": "${workspaceFolder}",
-            "executable": "./1. GPIO/DIO/build/ADC.elf",
+            "executable": "./1. GPIO/build/ADC.elf",
             "request": "launch",
             "configFiles": [
                 "E:/Workspace/libary_emb/stm_toolchain/OpenOCD/xpack-openocd/openocd/scripts/interface/stlink.cfg",
                 "E:/Workspace/libary_emb/stm_toolchain/OpenOCD/xpack-openocd/openocd/scripts/target/stm32f1x.cfg"
             ],
-            "preLaunchTask": "DIO Build and Flash",
+            // "preLaunchTask": "DIO Build and Flash",
+            "runToEntryPoint": "main",
+            "servertype": "openocd",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        }
+        {
+            "name": "LIN debug",
+            "type": "cortex-debug",
+            "cwd": "${workspaceFolder}",
+            "executable": "./10. LIN/build/ADC.elf",
+            "request": "launch",
+            "configFiles": [
+                "E:/Workspace/libary_emb/stm_toolchain/OpenOCD/xpack-openocd/openocd/scripts/interface/stlink.cfg",
+                "E:/Workspace/libary_emb/stm_toolchain/OpenOCD/xpack-openocd/openocd/scripts/target/stm32f1x.cfg"
+            ],
+            // "preLaunchTask": "DIO Build and Flash",
             "runToEntryPoint": "main",
             "servertype": "openocd",
             "liveWatch": {

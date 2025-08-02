@@ -1,77 +1,77 @@
-# STM32F103 CAN Example Makefile
-# Target MCU: STM32F103C8T6
-# Toolchain: arm-none-eabi-gcc
 
-# Project name
-PROJECT = CAN_example
+# Makefile để build main.c và các file liên quan cho STM32F103 (no HAL/SPL)
+
+TARGET = LIN
+BUILD_DIR = build
+SPL_DIR = SPL
+
+# Include Paths
+INCLUDES = -I$(SPL_DIR)/Inc -ICore
 
 # Source files
-SRCS = main.c \
-       SPL/src/misc.c \
-       SPL/src/stm32f10x_can.c \
-       SPL/src/stm32f10x_gpio.c \
-       SPL/src/stm32f10x_rcc.c
+SRCS_C = main.c $(wildcard $(SPL_DIR)/Src/*.c)
+SRCS_S = startup_stm32f103.s
 
-# Include directories
-INCS = -I. \
-       -ISPL/inc \
-       -ICore
+OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(SRCS_C))) \
+	   $(patsubst %.s,$(BUILD_DIR)/%.o,$(notdir $(SRCS_S)))
 
-# Linker script
-LDSCRIPT = stm32f103.ld
+# Compiler and flags
+CC      = arm-none-eabi-gcc
+CFLAGS  = -mcpu=cortex-m3 -mthumb -O0 -g -Wall -ffreestanding -nostdlib \
+		  $(INCLUDES) -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER
+LDFLAGS = -T stm32f103.ld -nostdlib -Wl,--gc-sections
 
-# Startup file
-STARTUP = startup_stm32f103.s
-
-# Toolchain commands
-CC = arm-none-eabi-gcc
-AS = arm-none-eabi-as
-LD = arm-none-eabi-ld
-OBJCOPY = arm-none-eabi-objcopy
-SIZE = arm-none-eabi-size
-
-# Flags
-CFLAGS = -mcpu=cortex-m3 -mthumb -O2 -Wall $(INCS)
-LDFLAGS = -T$(LDSCRIPT) -nostartfiles
-
-# Output directories
-BUILD_DIR = build
-
-# Objects
-OBJS = $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o)) $(BUILD_DIR)/startup_stm32f103.o
+# Create build directory
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
 # Default target
-all: $(BUILD_DIR) $(BUILD_DIR)/$(PROJECT).elf $(BUILD_DIR)/$(PROJECT).bin
-
-$(BUILD_DIR):
-	@mkdir -p $(BUILD_DIR)
+all: $(BUILD_DIR) $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET).hex
+	@echo "Build completed successfully."
 
 # Compile C files
-$(BUILD_DIR)/%.o: %.c
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Assemble startup file
-$(BUILD_DIR)/startup_stm32f103.o: $(STARTUP)
-	$(AS) -mcpu=cortex-m3 -mthumb $< -o $@
+# SPL sources
+$(BUILD_DIR)/%.o: $(SPL_DIR)/Src/%.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Link
-$(BUILD_DIR)/$(PROJECT).elf: $(OBJS)
-	$(CC) -mcpu=cortex-m3 -mthumb -O2 -nostdlib $(OBJS) $(LDFLAGS) -o $@
-	$(SIZE) $@
+# Assemble file ASM into build directory
+$(BUILD_DIR)/%.o: %.s | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Create binary
-$(BUILD_DIR)/$(PROJECT).bin: $(BUILD_DIR)/$(PROJECT).elf
-	$(OBJCOPY) -O binary $< $@
+# Link ELF
+$(BUILD_DIR)/$(TARGET).elf: $(OBJS) stm32f103.ld
+	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -o $@
 
+# Create .bin from .elf
+$(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
+	arm-none-eabi-objcopy -O binary $< $@
 
-# Flash (using openocd)
+# Create .hex from .elf
+$(BUILD_DIR)/$(TARGET).hex: $(BUILD_DIR)/$(TARGET).elf
+	arm-none-eabi-objcopy -O ihex $< $@
+
+# Flash
 flash: all
-	openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program $(BUILD_DIR)/$(PROJECT).bin 0x08000000 verify reset exit"
-# Clean
-clean:
-	rm -rf $(BUILD_DIR)
+	openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program $(BUILD_DIR)/$(TARGET).bin 0x08000000 verify reset exit"
 
-get_stlink_id: 
-	openocd -f interface/stlink.cfg -c "adapter serial ? " -c "exit"
-	
-.PHONY: all clean flash get_stlink_id
+# Clean build directory
+clean:
+	@echo "Cleaning build directory..."
+	rm -rf $(BUILD_DIR)/*
+	@echo "Clean completed."
+
+# Help
+help:
+	@echo "Usage:"
+	@echo "  make all        # Build main.c and SPL sources"
+	@echo "  make flash      # Build and flash main program"
+	@echo "  make clean      # Clean build directory"
+	@echo "  make help       # Show this help message"
+
+# Add hex target
+hex: $(BUILD_DIR)/$(TARGET).hex
+
+.PHONY: all flash hex clean help

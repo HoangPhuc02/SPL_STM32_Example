@@ -1,277 +1,301 @@
-/*
- * =============================================================================
- * Project: STM32F103 LIN Example (SPL)
- * File: basic_receiver.c
- * Description: Giao tiếp LIN cơ bản sử dụng SPL (Standard Peripheral Library)
- * Author: LIN Driver Team
- * Date: 30/07/2025
- * Author      : hoangphuc540202@gmail.com
- * Github      : https://github.com/HoangPhuc02
- * =============================================================================
- */
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_rcc.h"
+#include "misc.h"
 
-/* =============================================================================
- * INCLUDES - Khai báo các thư viện cần thiết
- * =============================================================================
- */
-#include "stm32f10x.h"          // Thư viện chính cho STM32F10x
-#include "stm32f10x_gpio.h"     // Điều khiển GPIO
-#include "stm32f10x_rcc.h"      // Quản lý clock
-#include "stm32f10x_usart.h"    // Giao tiếp UART/USART
+// LIN Protocol defines
+#define LIN_SYNC_BYTE           0x55                // LIN sync byte value
+#define LIN_BREAK_THRESHOLD     10                  // Break detection threshold (not used directly)
+#define LIN_FRAME_MAX_SIZE      8                   // Maximum number of data bytes in a LIN frame
+#define TARGET_ID               0x30                // Target ID to trigger LED
 
-/* =============================================================================
- * DEFINES - Các định nghĩa và hằng số
- * =============================================================================
- */
-// Định nghĩa các thông số LIN
-#define LIN_BREAK_DELAY      13      // Số bit thời gian cho break detection
-#define LIN_MAX_FRAME_SIZE   10      // Kích thước tối đa frame: Sync + PID + 8 data + checksum
-#define LIN_TIMEOUT          1000    // Thời gian timeout cho việc nhận frame
+// LIN Frame States
+typedef enum {
+    LIN_STATE_IDLE,                 // Waiting for LIN frame
+    LIN_STATE_BREAK_DETECTED,       // Break detected, start of frame
+    LIN_STATE_SYNC_RECEIVED,        // Sync byte received
+    LIN_STATE_PID_RECEIVED,         // PID received, waiting for data
+    LIN_STATE_DATA_RECEIVING,       // Receiving data bytes
+    LIN_STATE_CHECKSUM_RECEIVED     // Checksum received, frame complete
+} LIN_State_t;
 
-/* =============================================================================
- * STRUCTURES - Cấu trúc dữ liệu
- * =============================================================================
- */
-// Cấu trúc frame LIN
+// LIN Frame Structure
 typedef struct {
-    uint8_t sync;                    // Byte đồng bộ (0x55)
-    uint8_t pid;                     // ID gói tin với parity
-    uint8_t data[8];                 // Dữ liệu (tối đa 8 byte)
-    uint8_t length;                  // Độ dài dữ liệu thực tế
-    uint8_t checksum;                // Checksum kiểm tra
-    uint8_t status;                  // Trạng thái frame: 0-idle, 1-receiving, 2-complete, 3-error
-} LIN_Frame;
+    uint8_t sync;                       // Sync byte (0x55)
+    uint8_t pid;                        // Protected Identifier (PID)
+    uint8_t data[LIN_FRAME_MAX_SIZE];   // Data bytes
+    uint8_t data_length;                // Number of data bytes
+    uint8_t checksum;                   // Received checksum
+    uint8_t calculated_checksum;        // Calculated checksum for verification
+} LIN_Frame_t;
 
-/* =============================================================================
- * GLOBAL VARIABLES - Biến toàn cục
- * =============================================================================
- */
-volatile LIN_Frame lin_rx_frame;     // Frame LIN đang xử lý
-volatile uint8_t lin_rx_buffer[LIN_MAX_FRAME_SIZE];  // Buffer lưu dữ liệu tạm
-volatile uint8_t lin_rx_index = 0;   // Chỉ số hiện tại trong buffer
-volatile uint32_t lin_rx_timer = 0;  // Timer cho timeout
+// Global variables
+static volatile LIN_State_t lin_state = LIN_STATE_IDLE; // Current LIN state
+static volatile LIN_Frame_t lin_frame;                  // Current LIN frame
+static volatile uint8_t data_index = 0;                 // Index for data bytes
+static volatile uint32_t break_timer = 0;               // Timer for break detection (not used)
 
-/* =============================================================================
- * FUNCTION PROTOTYPES - Khai báo prototype các hàm
- * =============================================================================
- */
-void LIN_Init(void);                 // Khởi tạo LIN interface
-void LIN_SendBreak(void);           // Gửi tín hiệu break
-void LIN_SendFrame(uint8_t pid, uint8_t *data, uint8_t length); // Gửi frame
-uint8_t LIN_CheckPID(uint8_t pid);  // Kiểm tra PID
-uint8_t LIN_CalculateChecksum(uint8_t pid, uint8_t *data, uint8_t length); // Tính checksum
-void LIN_ReceiveHandler(void);      // Xử lý nhận dữ liệu
-uint8_t LIN_CheckFrame(LIN_Frame *frame); // Kiểm tra frame
+// Function prototypes
+void System_Init(void);                                 // System initialization
+void GPIO_Configuration(void);                          // GPIO setup
+void UART_Configuration(void);                          // USART setup
+void NVIC_Configuration(void);                          // NVIC interrupt setup
+void Toggle_LED_C13(void);                              // Toggle LED on PC13
+uint8_t Calculate_LIN_Checksum(uint8_t pid, uint8_t *data, uint8_t length); // LIN checksum calculation
+uint8_t Check_PID_Parity(uint8_t pid);                  // Check PID parity bits
+void Process_LIN_Frame(void);                           // Process received LIN frame
 
-/* =============================================================================
- * MAIN FUNCTION - Chương trình chính
- * =============================================================================
- */
 int main(void)
 {
-    // Khởi tạo mảng dữ liệu mẫu để gửi
-    uint8_t data[2] = {0x55, 0xAA};
+    System_Init();      // Initialize system peripherals
     
-    // Khởi tạo hệ thống và LIN
-    SystemInit();                    // Cấu hình clock hệ thống
-    LIN_Init();                     // Khởi tạo LIN interface
-    
-    // Cấu hình ngắt USART1
-    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
-    NVIC_EnableIRQ(USART1_IRQn);
-    
-    // Vòng lặp chính
-    while(1)
+    while (1)
     {
-        // Kiểm tra nếu nhận được frame hoàn chỉnh
-        if(lin_rx_frame.status == 2) // Frame hoàn thành
-        {
-            if(LIN_CheckFrame(&lin_rx_frame))
-            {
-                // Frame hợp lệ - xử lý tại đây
-                // Ví dụ: Điều khiển LED dựa trên dữ liệu nhận được
-                if(lin_rx_frame.pid == 0x30)
-                {
-                    GPIO_WriteBit(GPIOC, GPIO_Pin_13, 
-                                (lin_rx_frame.data[0] == 0x55) ? Bit_RESET : Bit_SET);
-                }
-            }
-            
-            // Reset trạng thái frame
-            lin_rx_frame.status = 0;
-        }
-        
-        // Gửi frame LIN định kỳ
-        static uint32_t last_send = 0;
-        if(SystemCoreClock - last_send > 1000000)
-        {
-            LIN_SendFrame(0x30, data, 2);
-            last_send = SystemCoreClock;
-            
-            // Đảo bit dữ liệu cho lần gửi tiếp theo
-            data[0] ^= 0xFF;
-            data[1] ^= 0xFF;
-        }
+        // Main loop - everything handled in interrupt
+        __WFI();        // Wait for interrupt (low power)
     }
 }
 
-/* =============================================================================
- * INTERRUPT HANDLER - Xử lý ngắt USART1
- * =============================================================================
- */
-void USART1_IRQHandler(void)
+// Initialize clocks, GPIO, UART, NVIC
+void System_Init(void)
 {
-    if(USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
-    {
-        uint8_t received = USART_ReceiveData(USART1);
-        
-        // Reset timer timeout
-        lin_rx_timer = SystemCoreClock;
-        
-        // Kiểm tra break (0x00) - bắt đầu frame
-        if(received == 0x00 && lin_rx_frame.status == 0)
-        {
-            lin_rx_frame.status = 1; // Bắt đầu nhận
-            lin_rx_index = 0;
-            lin_rx_buffer[lin_rx_index++] = received;
-        }
-        else if(lin_rx_frame.status == 1) // Đang nhận frame
-        {
-            lin_rx_buffer[lin_rx_index++] = received;
-            
-            // Kiểm tra frame hoàn chỉnh (tối thiểu: sync + pid + checksum)
-            if(lin_rx_index >= 3)
-            {
-                // Kiểm tra đã nhận đủ byte dữ liệu
-                uint8_t expected_length = 3; // sync + pid + checksum
-                if(lin_rx_index >= expected_length)
-                {
-                    // Phân tích frame nhận được
-                    lin_rx_frame.sync = lin_rx_buffer[0];
-                    lin_rx_frame.pid = lin_rx_buffer[1];
-                    
-                    // Độ dài dữ liệu phụ thuộc ứng dụng (giả sử 2 byte)
-                    lin_rx_frame.length = 2;
-                    lin_rx_frame.data[0] = lin_rx_buffer[2];
-                    lin_rx_frame.data[1] = lin_rx_buffer[3];
-                    lin_rx_frame.checksum = lin_rx_buffer[4];
-                    
-                    lin_rx_frame.status = 2; // Frame hoàn thành
-                }
-            }
-        }
-        
-        USART_ClearITPendingBit(USART1, USART_IT_RXNE);
-    }
+    // Enable clocks for GPIOA, GPIOC, USART1
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC | 
+                          RCC_APB2Periph_USART1, ENABLE);
+    
+    GPIO_Configuration();   // Setup GPIO pins
+    UART_Configuration();   // Setup USART1 for LIN
+    NVIC_Configuration();   // Setup NVIC for USART1 interrupt
 }
 
-/* =============================================================================
- * LIN_CheckFrame - Kiểm tra tính hợp lệ của frame
- * =============================================================================
- * Tham số:
- * - frame: Con trỏ đến frame cần kiểm tra
- * 
- * Trả về:
- * - 1: Frame hợp lệ
- * - 0: Frame không hợp lệ
- */
-uint8_t LIN_CheckFrame(LIN_Frame *frame)
-{
-    // Kiểm tra byte sync
-    if(frame->sync != 0x55)
-        return 0;
-    
-    // Kiểm tra parity của PID
-    uint8_t pid = LIN_CheckPID(frame->pid & 0x3F);
-    if(pid != frame->pid)
-        return 0;
-    
-    // Kiểm tra checksum
-    uint8_t calc_checksum = LIN_CalculateChecksum(frame->pid, frame->data, frame->length);
-    if(calc_checksum != frame->checksum)
-        return 0;
-    
-    return 1; // Frame hợp lệ
-}
-
-/* =============================================================================
- * LIN_CalculateChecksum - Tính checksum cho frame LIN
- * =============================================================================
- * Tham số:
- * - pid: ID của frame
- * - data: Con trỏ đến mảng dữ liệu
- * - length: Độ dài dữ liệu
- * 
- * Trả về:
- * - Giá trị checksum đã tính toán
- */
-uint8_t LIN_CalculateChecksum(uint8_t pid, uint8_t *data, uint8_t length)
-{
-    uint16_t checksum = pid;
-    
-    // Tính checksum theo chuẩn LIN 2.0 (PID + data)
-    for(int i = 0; i < length; i++)
-    {
-        checksum += data[i];
-        if(checksum > 0xFF)
-            checksum -= 0xFF;
-    }
-    
-    return ~checksum; // Đảo bit kết quả
-}
-
-/* =============================================================================
- * LIN_Init - Khởi tạo giao tiếp LIN
- * =============================================================================
- * Chức năng:
- * - Cấu hình GPIO cho USART1 (TX: PA9, RX: PA10)
- * - Cấu hình LED debug (PC13)
- * - Cấu hình USART1 cho giao tiếp LIN
- * - Cấu hình ngắt nhận USART1
- */
-void LIN_Init(void)
+// Configure GPIO pins for LED and USART1
+void GPIO_Configuration(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
-    USART_InitTypeDef USART_InitStructure;
-    NVIC_InitTypeDef NVIC_InitStructure;
     
-    // Bật clock cho các ngoại vi
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO | RCC_APB2Periph_USART1, ENABLE);
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
-    
-    // Cấu hình LED trên PC13
+    // Configure LED PC13 as output push-pull
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOC, &GPIO_InitStructure);
+    
+    // Turn off LED initially (active low)
     GPIO_SetBits(GPIOC, GPIO_Pin_13);
     
-    // Cấu hình USART1 Tx (PA9) và Rx (PA10)
+    // Configure USART1 TX (PA9) as alternate function push-pull
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
     
+    // Configure USART1 RX (PA10) as input floating
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
+}
+
+// Configure USART1 for LIN communication
+void UART_Configuration(void)
+{
+    USART_InitTypeDef USART_InitStructure;
     
-    // Cấu hình USART1 cho LIN
-    USART_InitStructure.USART_BaudRate = 9600;  // Tốc độ chuẩn LIN
+    // Set baud rate to 9600 (typical for LIN)
+    USART_InitStructure.USART_BaudRate = 9600;
     USART_InitStructure.USART_WordLength = USART_WordLength_8b;
     USART_InitStructure.USART_StopBits = USART_StopBits_1;
     USART_InitStructure.USART_Parity = USART_Parity_No;
     USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
     USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
     
-    USART_Init(USART1, &USART_InitStructure);
+    USART_Init(USART1, &USART_InitStructure);   // Apply configuration
     
-    // Cấu hình ngắt USART1 RX
+    // Enable LIN mode and set break detection length to 10 bits
+    USART_LINCmd(USART1, ENABLE);
+    // USART_LINBreakDetectLengthConfig(USART1, USART_LINBreakDetectLength_10b);
+    // Enable RXNE (receive) and LBD (LIN break detection) interrupts
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    USART_ITConfig(USART1, USART_IT_LBD, ENABLE);
+    
+    // Enable USART1 peripheral
+    USART_Cmd(USART1, ENABLE);
+}
+
+// Configure NVIC for USART1 interrupt
+void NVIC_Configuration(void)
+{
+    NVIC_InitTypeDef NVIC_InitStructure;
+    
+    // Set USART1 interrupt priority and enable
     NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;
     NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
     NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
     NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
+}
+
+// USART1 interrupt handler: handles LIN frame reception
+void USART1_IRQHandler(void)
+{
+    // Check for LIN Break Detection interrupt
+    if (USART_GetITStatus(USART1, USART_IT_LBD) != RESET)
+    {
+        USART_ClearITPendingBit(USART1, USART_IT_LBD); // Clear interrupt flag
+        
+        // Break detected - start of new LIN frame
+        lin_state = LIN_STATE_BREAK_DETECTED;
+        data_index = 0;
+        
+        // Clear frame data
+        lin_frame.sync = 0;
+        lin_frame.pid = 0;
+        lin_frame.data_length = 0;
+        lin_frame.checksum = 0;
+        lin_frame.calculated_checksum = 0;
+    }
     
-    USART_Cmd(USART1, ENABLE);
+    // Check for received data interrupt
+    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
+    {
+        uint8_t received_byte = USART_ReceiveData(USART1); // Read received byte
+        
+        switch (lin_state)
+        {
+            case LIN_STATE_BREAK_DETECTED:
+                // After break, expect sync byte
+                lin_state = LIN_STATE_SYNC_RECEIVED;
+                break;
+                
+            case LIN_STATE_SYNC_RECEIVED:
+                // After sync, expect PID
+                lin_frame.pid = received_byte;
+                
+                // Check PID parity
+                if (Check_PID_Parity(received_byte))
+                {
+                    lin_frame.data_length = LIN_FRAME_MAX_SIZE; // Get expected data length
+                    lin_state = LIN_STATE_PID_RECEIVED;
+                    data_index = 0;
+                }
+                else
+                {
+                    lin_state = LIN_STATE_IDLE; // Invalid PID, reset state
+                }
+                break;
+                
+            case LIN_STATE_PID_RECEIVED:
+            case LIN_STATE_DATA_RECEIVING:
+                // Receive data bytes
+                if (data_index < lin_frame.data_length)
+                {
+                    lin_frame.data[data_index] = received_byte;
+                    data_index++;
+                    lin_state = LIN_STATE_DATA_RECEIVING;
+                }
+                else
+                {
+                    // After data, next byte is checksum
+                    lin_frame.checksum = received_byte;
+                    lin_state = LIN_STATE_CHECKSUM_RECEIVED;
+                    Process_LIN_Frame(); // Process complete frame
+                }
+                break;
+                
+            default:
+                lin_state = LIN_STATE_IDLE; // Any other state, reset
+                break;
+        }
+    }
+}
+
+// Process received LIN frame: verify checksum and toggle LED if target ID
+void Process_LIN_Frame(void)
+{
+    // Calculate expected checksum (LIN 2.x: includes PID)
+    lin_frame.calculated_checksum = Calculate_LIN_Checksum(lin_frame.pid, 
+                                                          (uint8_t*)lin_frame.data, 
+                                                          lin_frame.data_length);
+    
+    // Check if received checksum matches calculated checksum
+    if (lin_frame.checksum == lin_frame.calculated_checksum)
+    {
+        // Extract ID from PID
+        uint8_t id = Extract_ID_From_PID(lin_frame.pid);
+        
+        // If ID matches target, toggle LED
+        if (id == TARGET_ID)
+        {
+            Toggle_LED_C13();
+        }
+    }
+    
+    // Reset state for next frame
+    lin_state = LIN_STATE_IDLE;
+}
+
+// Calculate LIN checksum (enhanced for LIN 2.x, includes PID)
+uint8_t Calculate_LIN_Checksum(uint8_t pid, uint8_t *data, uint8_t length)
+{
+    uint16_t sum = 0;
+    uint8_t i;
+    
+    // LIN 2.x uses enhanced checksum (includes PID)
+    // For LIN 1.x, comment out the next line
+    sum += Extract_ID_From_PID(pid);
+    
+    // Add all data bytes
+    for (i = 0; i < length; i++)
+    {
+        sum += data[i];
+        
+        // Handle carry (add carry to sum)
+        if (sum > 0xFF)
+        {
+            sum = (sum & 0xFF) + 1;
+        }
+    }
+    
+    // Invert result for checksum
+    return (uint8_t)(~sum);
+}
+
+
+
+// Extract ID from PID (bits 5-0)
+uint8_t Extract_ID_From_PID(uint8_t pid)
+{
+    return (pid & 0x3F);
+}
+
+// Check PID parity bits (bits 6 and 7)
+uint8_t Check_PID_Parity(uint8_t pid)
+{
+    uint8_t id = Extract_ID_From_PID(pid);
+    uint8_t p0, p1;
+    
+    // Calculate parity bits according to LIN specification
+    p0 = (id & 0x01) ^ ((id >> 1) & 0x01) ^ ((id >> 2) & 0x01) ^ ((id >> 4) & 0x01);
+    p1 = ~(((id >> 1) & 0x01) ^ ((id >> 3) & 0x01) ^ ((id >> 4) & 0x01) ^ ((id >> 5) & 0x01)) & 0x01;
+    
+    // Check if calculated parity matches received parity bits
+    uint8_t expected_pid = id | (p0 << 6) | (p1 << 7);
+    
+    return (pid == expected_pid);
+}
+
+// Toggle LED on PC13 (active low)
+void Toggle_LED_C13(void)
+{
+    static uint8_t led_state = 0;
+    
+    if (led_state)
+    {
+        GPIO_SetBits(GPIOC, GPIO_Pin_13);   // Turn off LED
+        led_state = 0;
+    }
+    else
+    {
+        GPIO_ResetBits(GPIOC, GPIO_Pin_13); // Turn on LED
+        led_state = 1;
+    }
 }
