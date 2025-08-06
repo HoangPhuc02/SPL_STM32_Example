@@ -48,6 +48,173 @@ void UART_SendHex(uint8_t value);
 void Display_CAN_Message(void);
 void Delay(uint32_t count);
 
+/************************************************************************
+ *                          Utility Functions                           *
+*************************************************************************/
+
+/* ======================= UART Utility Functions ======================= */
+/**
+ * @brief Send a byte via UART
+ */
+void UART_SendByte(uint8_t byte)
+{
+    while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+    USART_SendData(USART1, byte);
+}
+
+/**
+ * @brief Send a string via UART
+ */
+void UART_SendString(char* str)
+{
+    while(*str)
+    {
+        UART_SendByte(*str++);
+    }
+}
+
+/**
+ * @brief Send a hex value via UART
+ */
+void UART_SendHex(uint8_t value)
+{
+    uint8_t high = (value >> 4) & 0x0F;
+    uint8_t low = value & 0x0F;
+    
+    UART_SendByte(high < 10 ? '0' + high : 'A' + high - 10);
+    UART_SendByte(low < 10 ? '0' + low : 'A' + low - 10);
+}
+
+/* ======================= CAN Message Display ======================= */
+/**
+ * @brief Display received CAN message via UART
+ */
+void Display_CAN_Message(void)
+{
+    UART_SendString("RX MSG: ID=0x");
+    UART_SendHex((RxMessage.StdId >> 8) & 0xFF);
+    UART_SendHex(RxMessage.StdId & 0xFF);
+    UART_SendString(" DLC=");
+    UART_SendByte('0' + RxMessage.DLC);
+    UART_SendString(" DATA=");
+    
+    for(uint8_t i = 0; i < RxMessage.DLC; i++)
+    {
+        UART_SendHex(RxMessage.Data[i]);
+        if(i < RxMessage.DLC - 1) UART_SendByte(' ');
+    }
+    
+    UART_SendString(" COUNT=");
+    UART_SendHex((message_count >> 8) & 0xFF);
+    UART_SendHex(message_count & 0xFF);
+    UART_SendString("\\r\\n");
+}
+/************************************************************************
+ *                          ISR Interrupt                               *
+*************************************************************************/
+
+/* ======================= CAN Interrupt Handler ======================= */
+/**
+ * @brief CAN RX interrupt handler
+ * @note  Called when CAN message is received in FIFO0
+ */
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+    /* Check if FIFO0 message pending */
+    if(CAN_GetITStatus(CAN1, CAN_IT_FMP0) == SET)
+    {
+        /* Receive the message */
+        CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);
+        
+        /* Copy data to last_data buffer */
+        for(uint8_t i = 0; i < 8; i++)
+        {
+            last_data[i] = (i < RxMessage.DLC) ? RxMessage.Data[i] : 0;
+        }
+        
+        /* Set received flag */
+        message_received = 1;
+        message_count++;
+        
+        /* Clear interrupt flag */
+        CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
+    }
+}
+
+/* ======================= Utility Functions ======================= */
+/**
+ * @brief Simple delay function
+ */
+void Delay(uint32_t count)
+{
+    volatile uint32_t i;
+    for (i = 0; i < count; i++);
+}
+
+/* ======================= Main Function ======================= */
+/**
+ * @brief Main application function - CAN Receiver
+ * @note  Receives CAN messages and displays them via UART and LED
+ * 
+ * Program Flow:
+ * 1. Initialize system clock (72MHz)
+ * 2. Configure GPIO (CAN, LED, UART)
+ * 3. Configure CAN peripheral with filter
+ * 4. Configure UART for debug output
+ * 5. Configure interrupts
+ * 6. Main loop: Process received messages
+ */
+int main(void)
+{
+    /* System Initialization */
+    SystemInit();    // 1. Setup system clock to 72MHz
+    GPIO_Config();           // 2. Configure GPIO pins
+    CAN_Config();            // 3. Configure CAN peripheral
+    UART_Config();           // 4. Configure UART for debug
+    NVIC_Config();           // 5. Configure interrupts
+    
+    /* Send startup message */
+    UART_SendString("STM32F103 CAN Receiver Started\\r\\n");
+    UART_SendString("Waiting for CAN messages (ID=0x123)...\\r\\n");
+    
+    /* Startup indication - blink LED 3 times */
+    for (uint8_t i = 0; i < 3; i++) {
+        GPIO_ResetBits(GPIOC, GPIO_Pin_13);  // LED on
+        Delay(200000);
+        GPIO_SetBits(GPIOC, GPIO_Pin_13);    // LED off
+        Delay(200000);
+    }
+    
+    /* Main application loop */
+    while (1)
+    {
+        /* Check if message was received */
+        if (message_received)
+        {
+            /* Turn on LED to indicate reception */
+            GPIO_ResetBits(GPIOC, GPIO_Pin_13);
+            
+            /* Display message via UART */
+            Display_CAN_Message();
+            
+            /* Reset flag */
+            message_received = 0;
+            
+            /* Brief LED indication */
+            Delay(100000);
+            GPIO_SetBits(GPIOC, GPIO_Pin_13);
+        }
+        
+        /* Small delay */
+        Delay(1000);
+    }
+}
+
+
+
+/************************************************************************
+ *                          System Configuration                        *
+*************************************************************************/
 /* ======================= System Clock Configuration ======================= */
 /**
  * @brief Configure system clock to 72MHz using HSE and PLL
@@ -91,6 +258,7 @@ void SystemClock_Config(void)
         /* HSE failed - halt system */
         while(1);
     }
+    
 }
 
 /* ======================= GPIO Configuration ======================= */
@@ -114,7 +282,7 @@ void GPIO_Config(void)
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    GPIO_Init(GPIOA, &GPIO_InitStructure); 
 
     /* Configure UART pins: PA9 (TX) for debug output */
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
@@ -228,159 +396,4 @@ void UART_Config(void)
     
     /* Enable USART1 */
     USART_Cmd(USART1, ENABLE);
-}
-
-/* ======================= UART Utility Functions ======================= */
-/**
- * @brief Send a byte via UART
- */
-void UART_SendByte(uint8_t byte)
-{
-    while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-    USART_SendData(USART1, byte);
-}
-
-/**
- * @brief Send a string via UART
- */
-void UART_SendString(char* str)
-{
-    while(*str)
-    {
-        UART_SendByte(*str++);
-    }
-}
-
-/**
- * @brief Send a hex value via UART
- */
-void UART_SendHex(uint8_t value)
-{
-    uint8_t high = (value >> 4) & 0x0F;
-    uint8_t low = value & 0x0F;
-    
-    UART_SendByte(high < 10 ? '0' + high : 'A' + high - 10);
-    UART_SendByte(low < 10 ? '0' + low : 'A' + low - 10);
-}
-
-/* ======================= CAN Message Display ======================= */
-/**
- * @brief Display received CAN message via UART
- */
-void Display_CAN_Message(void)
-{
-    UART_SendString("RX MSG: ID=0x");
-    UART_SendHex((RxMessage.StdId >> 8) & 0xFF);
-    UART_SendHex(RxMessage.StdId & 0xFF);
-    UART_SendString(" DLC=");
-    UART_SendByte('0' + RxMessage.DLC);
-    UART_SendString(" DATA=");
-    
-    for(uint8_t i = 0; i < RxMessage.DLC; i++)
-    {
-        UART_SendHex(RxMessage.Data[i]);
-        if(i < RxMessage.DLC - 1) UART_SendByte(' ');
-    }
-    
-    UART_SendString(" COUNT=");
-    UART_SendHex((message_count >> 8) & 0xFF);
-    UART_SendHex(message_count & 0xFF);
-    UART_SendString("\\r\\n");
-}
-
-/* ======================= CAN Interrupt Handler ======================= */
-/**
- * @brief CAN RX interrupt handler
- * @note  Called when CAN message is received in FIFO0
- */
-void USB_LP_CAN1_RX0_IRQHandler(void)
-{
-    /* Check if FIFO0 message pending */
-    if(CAN_GetITStatus(CAN1, CAN_IT_FMP0) == SET)
-    {
-        /* Receive the message */
-        CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);
-        
-        /* Copy data to last_data buffer */
-        for(uint8_t i = 0; i < 8; i++)
-        {
-            last_data[i] = (i < RxMessage.DLC) ? RxMessage.Data[i] : 0;
-        }
-        
-        /* Set received flag */
-        message_received = 1;
-        message_count++;
-        
-        /* Clear interrupt flag */
-        CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
-    }
-}
-
-/* ======================= Utility Functions ======================= */
-/**
- * @brief Simple delay function
- */
-void Delay(uint32_t count)
-{
-    volatile uint32_t i;
-    for (i = 0; i < count; i++);
-}
-
-/* ======================= Main Function ======================= */
-/**
- * @brief Main application function - CAN Receiver
- * @note  Receives CAN messages and displays them via UART and LED
- * 
- * Program Flow:
- * 1. Initialize system clock (72MHz)
- * 2. Configure GPIO (CAN, LED, UART)
- * 3. Configure CAN peripheral with filter
- * 4. Configure UART for debug output
- * 5. Configure interrupts
- * 6. Main loop: Process received messages
- */
-int main(void)
-{
-    /* System Initialization */
-    SystemClock_Config();    // 1. Setup system clock to 72MHz
-    GPIO_Config();           // 2. Configure GPIO pins
-    CAN_Config();            // 3. Configure CAN peripheral
-    UART_Config();           // 4. Configure UART for debug
-    NVIC_Config();           // 5. Configure interrupts
-    
-    /* Send startup message */
-    UART_SendString("STM32F103 CAN Receiver Started\\r\\n");
-    UART_SendString("Waiting for CAN messages (ID=0x123)...\\r\\n");
-    
-    /* Startup indication - blink LED 3 times */
-    for (uint8_t i = 0; i < 3; i++) {
-        GPIO_ResetBits(GPIOC, GPIO_Pin_13);  // LED on
-        Delay(200000);
-        GPIO_SetBits(GPIOC, GPIO_Pin_13);    // LED off
-        Delay(200000);
-    }
-    
-    /* Main application loop */
-    while (1)
-    {
-        /* Check if message was received */
-        if (message_received)
-        {
-            /* Turn on LED to indicate reception */
-            GPIO_ResetBits(GPIOC, GPIO_Pin_13);
-            
-            /* Display message via UART */
-            Display_CAN_Message();
-            
-            /* Reset flag */
-            message_received = 0;
-            
-            /* Brief LED indication */
-            Delay(100000);
-            GPIO_SetBits(GPIOC, GPIO_Pin_13);
-        }
-        
-        /* Small delay */
-        Delay(1000);
-    }
 }

@@ -436,7 +436,89 @@ CAN_InitStructure.CAN_Mode = CAN_Mode_Silent_LoopBack;
 ```
 
 ---
-\
+
+
+Câu hỏi của bạn **rất thông minh** vì **CAN FIFO** và **DMA** đều là khái niệm về **buffer (bộ đệm dữ liệu)**, nhưng **chúng hoàn toàn khác nhau về bản chất**.
+
+Mình sẽ giải thích rõ ràng để bạn **hiểu bản chất FIFO CAN không phải là DMA**, và chúng liên quan tới nhau thế nào.
+
+---
+
+## 1. **FIFO trong CAN Controller (CAN FIFO) là gì?**
+
+* FIFO = **First In First Out** → tức là bộ đệm hàng đợi, dữ liệu nào vào trước sẽ ra trước.
+* Trong module **CAN peripheral** của STM32, **có 2 FIFO phần cứng** để chứa **message đã lọc xong**:
+
+  * **FIFO 0** (CAN\_FIFO0)
+  * **FIFO 1** (CAN\_FIFO1)
+* Các message khi được nhận từ bus CAN (và qua bộ lọc Filter) sẽ **được đẩy vào FIFO0 hoặc FIFO1**.
+* CPU sau đó **đọc dữ liệu từ FIFO** (polling, interrupt hoặc DMA) để xử lý.
+
+| Đặc điểm                     | Ý nghĩa                                           |
+| ---------------------------- | ------------------------------------------------- |
+| **Chỉ là buffer phần cứng**  | Không tự động đẩy dữ liệu về RAM                  |
+| **Kích thước nhỏ**           | Thường chỉ chứa được 3-4 message                  |
+| **Là cơ chế hardware queue** | Được quản lý bởi CAN hardware, chứ không phải DMA |
+
+---
+
+## 2. **DMA là gì?**
+
+* DMA (Direct Memory Access) là module cho phép **truyền dữ liệu giữa các thiết bị ngoại vi (peripheral) và bộ nhớ RAM mà không cần CPU can thiệp**.
+* DMA sẽ lấy dữ liệu từ **FIFO của peripheral** (ví dụ UART, SPI, CAN...) và chép trực tiếp vào RAM.
+
+---
+
+## 3. **Vậy FIFO CAN có phải là DMA không?**
+
+| FIFO CAN                                               | DMA                                                |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| Là buffer nội bộ trong CAN Controller                  | Là module truyền dữ liệu của MCU                   |
+| Được dùng để lưu trữ message CAN đã lọc                | Dùng để chuyển dữ liệu từ FIFO tới RAM             |
+| Dữ liệu trong FIFO phải được đọc ra (CPU hoặc DMA đọc) | DMA sẽ tự động lấy dữ liệu từ FIFO và chép vào RAM |
+
+→ **Nói cách khác:**
+
+* FIFO CAN là **nơi chứa message tạm thời**.
+* **DMA là "tay chuyển hàng" tự động** giúp lấy dữ liệu từ FIFO đó ra RAM.
+* Nếu bạn không dùng DMA thì CPU sẽ phải đọc dữ liệu từ FIFO qua Interrupt hoặc Polling.
+
+---
+
+## 4. **CAN Receive Workflow (Không DMA vs Có DMA)**
+
+| Cách                              | Workflow                                                         |
+| --------------------------------- | ---------------------------------------------------------------- |
+| **Không DMA (Interrupt/Polling)** | CAN nhận message → qua Filter → FIFO0 → CPU đọc từ FIFO0         |
+| **Có DMA (CAN RX DMA)**           | CAN nhận message → qua Filter → FIFO0 → DMA tự động chép vào RAM |
+
+---
+
+## 5. **Vấn đề với FIFO trong CAN**
+
+* FIFO của CAN **chỉ chứa được vài message (3-4 frame)**.
+* Nếu CPU hoặc DMA không đọc kịp, FIFO sẽ **bị full → mất dữ liệu (overrun)**.
+  → Dùng DMA để **giảm tải CPU và tránh mất message** khi tốc độ truyền cao.
+
+---
+
+## 6. **Tóm tắt dễ nhớ:**
+
+| Ý nghĩa                       | FIFO CAN                                        | DMA                                               |
+| ----------------------------- | ----------------------------------------------- | ------------------------------------------------- |
+| **Công dụng**                 | Bộ đệm phần cứng chứa message CAN               | Cơ chế copy dữ liệu tự động giữa peripheral ↔ RAM |
+| **Mối quan hệ**               | DMA có thể lấy dữ liệu từ FIFO CAN              | DMA sẽ chép data từ FIFO ra RAM                   |
+| **Khi nào dùng DMA cho CAN?** | Khi tốc độ CAN cao và CPU không đọc kịp message |                                                   |
+
+---
+
+
+### Can filter explaination
+
+### Can init explaination
+
+
+### Can 
 ## CAN SPL Function
 
 ## Example

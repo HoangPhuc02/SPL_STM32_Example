@@ -26,6 +26,7 @@
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_can.h"
+#include "stm32f10x_flash.h"
 #include "system_stm32f10x.h"
 #include "misc.h"
 
@@ -34,23 +35,67 @@ CanTxMsg TxMessage;
 volatile uint8_t button_pressed = 0;
 uint32_t message_counter = 0;
 
+// SysTick timer variables - giống HAL_GetTick()
+volatile uint32_t msTicks = 0;
+
 /* ======================= Function Prototypes ======================= */
 void SystemClock_Config(void);
-void GPIO_Config(void);
+void CAN_GPIO_Config(void);
 void CAN_Config(void);
-void CAN_TransmitMessage(void);
+void CAN_TransmitMessage(uint8_t* data);
 void Delay(uint32_t count);
-uint8_t Button_Debounced_Press(void);
+void SysTick_Config_1ms(void);
+uint32_t GetTick(void);
+void Delay_ms(uint32_t delay);
+uint8_t Button_Debounced_Press(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin);
 
+/* ======================= SysTick Configuration ======================= */
+/**
+ * @brief Cấu hình SysTick cho interrupt 1ms (giống HAL_GetTick)
+ */
+void SysTick_Config_1ms(void)
+{
+    // Cấu hình SysTick để interrupt mỗi 1ms
+    if (SysTick_Config(SystemCoreClock / 1000))
+    {
+        while (1); // Cấu hình thất bại
+    }
+}
+
+/**
+ * @brief SysTick interrupt handler - tương tự HAL_IncTick()
+ */
+void SysTick_Handler(void)
+{
+    msTicks++;
+}
+
+/**
+ * @brief Lấy thời gian hiện tại - tương đương HAL_GetTick()
+ */
+uint32_t GetTick(void)
+{
+    return msTicks;
+}
+
+/**
+ * @brief Delay chính xác bằng millisecond - tương đương HAL_Delay()
+ */
+void Delay_ms(uint32_t delay)
+{
+    uint32_t start = GetTick();
+    while ((GetTick() - start) < delay);
+}
 /* ======================= CAN Transmission Function ======================= */
 /**
  * @brief Transmit CAN message with incrementing counter
  * @note  Sends 8-byte message with counter and test pattern
  */
-void CAN_TransmitMessage(void)
+void CAN_TransmitMessage(uint8_t* data)
 {
     uint8_t transmit_mailbox;
-    uint32_t timeout = 0;
+    uint32_t timeout_start = GetTick();
+    const uint32_t TIMEOUT_MS = 1000000; // 1000ms timeout
 
     /* Prepare CAN message */
     TxMessage.StdId = 0x123;                    // Standard ID
@@ -64,131 +109,107 @@ void CAN_TransmitMessage(void)
     TxMessage.Data[1] = (message_counter >> 16) & 0xFF;
     TxMessage.Data[2] = (message_counter >> 8) & 0xFF;
     TxMessage.Data[3] = message_counter & 0xFF;          // Counter LSB
-    TxMessage.Data[4] = 0xAA;                            // Test pattern
-    TxMessage.Data[5] = 0x55;                            // Test pattern
-    TxMessage.Data[6] = 0xCC;                            // Test pattern
-    TxMessage.Data[7] = 0x33;                            // Test pattern
-
-    /* Turn on LED to indicate transmission */
-    GPIO_ResetBits(GPIOC, GPIO_Pin_13);
+    TxMessage.Data[4] = data[0];                         // Test pattern
+    TxMessage.Data[5] = data[1];                         // Test pattern
+    TxMessage.Data[6] = data[2];                         // Test pattern
+    TxMessage.Data[7] = data[3];                         // Test pattern
 
     /* Transmit message */
     transmit_mailbox = CAN_Transmit(CAN1, &TxMessage);
     
-    /* Wait for transmission completion with timeout */
-    while((CAN_TransmitStatus(CAN1, transmit_mailbox) != CAN_TxStatus_Ok) && (timeout < 1000000))
+    /* Wait for transmission completion with SysTick timeout */
+    while((CAN_TransmitStatus(CAN1, transmit_mailbox) != CAN_TxStatus_Ok) && 
+          ((GetTick() - timeout_start) < TIMEOUT_MS))
     {
-        timeout++;
+        // Non-blocking wait with timeout
     }
-    
-    /* Turn off LED */
-    GPIO_SetBits(GPIOC, GPIO_Pin_13);
     
     /* Increment message counter */
     message_counter++;
-    
-    /* Brief delay to show LED */
-    Delay(100000);
 }
 
 
 /* ======================= Button Debouncing ======================= */
 /**
- * @brief Debounced button press detection
+ * @brief Simple and responsive button detection
  * @return 1 if button was just pressed, 0 otherwise
  */
-uint8_t Button_Debounced_Press(void)
+uint8_t Button_Debounced_Press(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin)
 {
-    static uint8_t button_state = 0;
-    static uint32_t debounce_timer = 0;
-    const uint32_t DEBOUNCE_DELAY = 20000;  // Adjust based on loop timing
+    static uint8_t button_was_pressed = 0;
+    static uint32_t last_change_time = 0;
     
-    uint8_t current_pin = GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0);
+    uint8_t button_current = GPIO_ReadInputDataBit(GPIOx, GPIO_Pin);
+    uint32_t current_time = GetTick();
     
-    switch (button_state) {
-        case 0: // Idle - waiting for press
-            if (current_pin == Bit_SET) {
-                button_state = 1;
-                debounce_timer = 0;
-            }
-            break;
-            
-        case 1: // Debouncing press
-            debounce_timer++;
-            if (debounce_timer > DEBOUNCE_DELAY) {
-                if (current_pin == Bit_SET) {
-                    button_state = 2;
-                    return 1; // Button press confirmed
-                } else {
-                    button_state = 0; // False trigger
-                }
-            }
-            break;
-            
-        case 2: // Button held - waiting for release
-            if (current_pin == Bit_RESET) {
-                button_state = 3;
-                debounce_timer = 0;
-            }
-            break;
-            
-        case 3: // Debouncing release
-            debounce_timer++;
-            if (debounce_timer > DEBOUNCE_DELAY) {
-                if (current_pin == Bit_RESET) {
-                    button_state = 0; // Button release confirmed
-                } else {
-                    button_state = 2; // Still pressed
-                }
-            }
-            break;
+    // Debounce: ignore changes trong 30ms
+    if ((current_time - last_change_time) < 30) {
+        return 0;
+    }
+    
+    // Rising edge: button pressed (0 → 1)
+    if (button_current == Bit_SET && button_was_pressed == 0) {
+        button_was_pressed = 1;
+        last_change_time = current_time;
+        return 1; // Button just pressed
+    }
+    
+    // Falling edge: button released (1 → 0)
+    if (button_current == Bit_RESET && button_was_pressed == 1) {
+        button_was_pressed = 0;
+        last_change_time = current_time;
     }
     
     return 0;
 }
+static void Toggle_Led(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin)
+{
+    GPIOx->ODR ^= GPIO_Pin;  // Toggle LED state
+}   
 
-/* =============================================================================
- * GLOBAL VARIABLES - Remove old variables
- * =============================================================================
- */
 
 /* ======================= Main Function ======================= */
 /**
- * @brief Main application function - CAN Transmitter
- * @note  Button-triggered CAN transmission with debouncing
+ * @brief Main application function - CAN Transmitter với SysTick
+ * @note  Button-triggered CAN transmission với proper timing
  * 
  * Program Flow:
  * 1. Initialize system clock (72MHz)
- * 2. Configure GPIO (CAN, Button, LED)
- * 3. Configure CAN peripheral
- * 4. Main loop: Wait for button press and transmit CAN message
+ * 2. Initialize SysTick timer (1ms interrupt)
+ * 3. Configure GPIO (CAN, Button, LED)
+ * 4. Configure CAN peripheral
+ * 5. Main loop: Wait for button press and transmit CAN message
  */
 int main(void)
 {
+    uint8_t data[4] = {0xAA, 0x55, 0xCC, 0x00}; // Test pattern
+    
     /* System Initialization */
     SystemInit();            // 1. Setup system clock to 72MHz
-    CAN_GPIO_Config();       // 2. Configure GPIO pins
-    CAN_Config();            // 3. Configure CAN peripheral
+    SysTick_Config_1ms();    // 2. Initialize SysTick timer (quan trọng!)
+    CAN_GPIO_Config();       // 3. Configure GPIO pins
+    CAN_Config();            // 4. Configure CAN peripheral
     
-    /* Startup indication - blink LED 3 times */
+    /* Startup indication - blink LED 3 times với timing chính xác */
     for (uint8_t i = 0; i < 3; i++) {
         GPIO_ResetBits(GPIOC, GPIO_Pin_13);  // LED on
-        Delay(200000);
+        Delay_ms(200);  // Dùng Delay_ms thay vì Delay
         GPIO_SetBits(GPIOC, GPIO_Pin_13);    // LED off
-        Delay(200000);
+        Delay_ms(200);
     }
     
     /* Main application loop */
     while (1)
     {
-        /* Check for button press */
-        if (Button_Debounced_Press()) {
+        /* Check for button press với debouncing chính xác */
+        if (Button_Debounced_Press(GPIOA, GPIO_Pin_0)) {
             /* Transmit CAN message */
-            CAN_TransmitMessage();
+            Toggle_Led(GPIOC, GPIO_Pin_13);  // Toggle LED to indicate transmission
+            CAN_TransmitMessage(data);
         }
         
-        /* Small delay for debouncing timing */
-        Delay(1000);
+        /* Small delay - dùng timing chính xác */
+        Delay_ms(1);  // 1ms delay thay vì Delay(1000)
     }
 }
 /* =============================================================================
@@ -252,10 +273,15 @@ void CAN_GPIO_Config(void)
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 
+    // Button PA0 as input floating
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+
     // PC13 for LED
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
     GPIO_Init(GPIOC, &GPIO_InitStructure);
 }
 
