@@ -21,6 +21,12 @@ CFLAGS  = -mcpu=cortex-m3 -mthumb -O0 -g -Wall -ffreestanding -nostdlib \
 		  $(INCLUDES) -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER
 LDFLAGS = -T stm32f103.ld -nostdlib -Wl,--gc-sections
 
+
+# CC      = arm-none-eabi-gcc
+# CFLAGS  = -mcpu=cortex-m3 -mthumb -O0 -g -Wall -ffreestanding \
+# 		  $(INCLUDES) -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER
+# LDFLAGS = -T stm32f103.ld -Wl,--gc-sections -lc -lm -lnosys --specs=nano.specs --specs=nosys.specs
+
 # Create build directory
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

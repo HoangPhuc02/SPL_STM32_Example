@@ -1,23 +1,25 @@
-/*
- * =============================================================================
- * ADC with Simple Integer Kalman Filter - No Fixed Point
- * =============================================================================
- * Features:
- * - Simple integer-only Kalman Filter (no 64-bit math)
- * - Selectable voltage range: 3.3V or 5V
- * - DMA-based ADC sampling
- * - UART output for monitoring
- * - Pure 32-bit arithmetic for STM32F103
- * =============================================================================
- */
-
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_adc.h"
 #include "stm32f10x_dma.h"
 #include "stm32f10x_usart.h"
+#include <stdio.h>
+#include <math.h>
 #include "misc.h"
+/**
+ * =============================================================================
+ * ADC with Kalman Filter for Voltage Measurement
+ * =============================================================================
+ * Features:
+ * - Kalman Filter for noise reduction
+ * - Selectable voltage range: 3.3V or 5V
+ * - DMA-based ADC sampling
+ * - UART output for monitoring
+ * - Real-time voltage estimation
+ * =============================================================================
+ */
+
 // Configuration
 #define ADC_BUFFER_SIZE     50      // Buffer size for DMA
 #define VREF_3V3           3300     // 3.3V in millivolts
@@ -30,86 +32,86 @@ typedef enum {
     VOLTAGE_RANGE_5V = 1
 } voltage_range_t;
 
-// Simple Integer Kalman Filter Structure (all values in millivolts * 100)
+// Kalman Filter Structure
 typedef struct {
-    int32_t x;          // State (estimated voltage in mV * 100)
-    int32_t P;          // Error covariance (* 100)
-    int32_t Q;          // Process noise covariance (* 100)
-    int32_t R;          // Measurement noise covariance (* 100)
-    uint8_t initialized;// Initialization flag
-} simple_kalman_t;
+    float x;            // State (estimated voltage)
+    float P;            // Error covariance
+    float Q;            // Process noise covariance
+    float R;            // Measurement noise covariance
+    float K;            // Kalman gain
+    float x_pred;       // Predicted state
+    float P_pred;       // Predicted error covariance
+    uint8_t initialized; // Initialization flag
+} kalman_filter_t;
 
 // Global Variables
 volatile uint16_t adc_buffer[ADC_BUFFER_SIZE];
 volatile uint8_t conversion_complete = 0;
 volatile uint32_t sample_count = 0;
 
-static simple_kalman_t voltage_filter;
+static kalman_filter_t voltage_filter;
 static voltage_range_t current_range = VOLTAGE_RANGE_3V3;
-static volatile int32_t filtered_voltage_mv = 0;    // in millivolts
-static volatile int32_t raw_voltage_mv = 0;         // in millivolts
+static volatile float filtered_voltage = 0.0f;
+static volatile float raw_voltage = 0.0f;
 
 // UART buffer for output
 char uart_buffer[200];
 
 /* =============================================================================
- * SIMPLE INTEGER KALMAN FILTER IMPLEMENTATION
+ * KALMAN FILTER IMPLEMENTATION
  * =============================================================================
  */
 
 /**
- * @brief Initialize Simple Kalman Filter
+ * @brief Initialize Kalman Filter
  * @param kf: Pointer to Kalman Filter structure
- * @param initial_value_mv: Initial voltage estimate in mV
+ * @param initial_value: Initial voltage estimate
+ * @param process_noise: Process noise (Q)
+ * @param measurement_noise: Measurement noise (R)
  */
-void Simple_Kalman_Init(simple_kalman_t* kf, int32_t initial_value_mv)
+void Kalman_Init(kalman_filter_t* kf, float initial_value, float process_noise, float measurement_noise)
 {
-    kf->x = initial_value_mv * 100;     // Scale up by 100 for precision
-    kf->P = 10000;                      // Initial error covariance (100 * 100)
-    kf->Q = 100;                        // Process noise (1 mV * 100)
-    kf->R = 5000;                       // Measurement noise (50 mV * 100)
+    kf->x = initial_value;          // Initial state
+    kf->P = 1.0f;                   // Initial error covariance
+    kf->Q = process_noise;          // Process noise (smaller = smoother)
+    kf->R = measurement_noise;      // Measurement noise
     kf->initialized = 1;
 }
 
 /**
- * @brief Update Simple Kalman Filter with new measurement
+ * @brief Update Kalman Filter with new measurement
  * @param kf: Pointer to Kalman Filter structure  
- * @param measurement_mv: New voltage measurement in mV
- * @return Filtered voltage estimate in mV
+ * @param measurement: New voltage measurement
+ * @return Filtered voltage estimate
  */
-int32_t Simple_Kalman_Update(simple_kalman_t* kf, int32_t measurement_mv)
+float Kalman_Update(kalman_filter_t* kf, float measurement)
 {
-    int32_t measurement_scaled = measurement_mv * 100;  // Scale up measurement
-    
     if (!kf->initialized) {
-        Simple_Kalman_Init(kf, measurement_mv);
-        return measurement_mv;
+        // First measurement - initialize with this value
+        Kalman_Init(kf, measurement, 0.01f, 0.1f);
+        return measurement;
     }
     
-    // Prediction Step (simple - assume constant voltage)
-    int32_t x_pred = kf->x;                    // State prediction
-    int32_t P_pred = kf->P + kf->Q;            // Error covariance prediction
+    // Prediction Step
+    kf->x_pred = kf->x;                 // State prediction (assuming constant voltage)
+    kf->P_pred = kf->P + kf->Q;         // Error covariance prediction
     
-    // Update Step (using integer arithmetic only)
-    int32_t denominator = P_pred + kf->R;
-    int32_t K = (P_pred * 100) / denominator;  // Kalman gain * 100
+    // Update Step
+    kf->K = kf->P_pred / (kf->P_pred + kf->R);  // Kalman gain
+    kf->x = kf->x_pred + kf->K * (measurement - kf->x_pred);  // State update
+    kf->P = (1.0f - kf->K) * kf->P_pred;        // Error covariance update
     
-    int32_t innovation = measurement_scaled - x_pred;
-    kf->x = x_pred + (K * innovation) / 100;   // State update
-    
-    kf->P = ((10000 - K) * P_pred) / 10000;    // Error covariance update
-    
-    return kf->x / 100;  // Scale back to mV
+    return kf->x;
 }
 
 /**
- * @brief Reset Simple Kalman Filter
+ * @brief Reset Kalman Filter
  */
-void Simple_Kalman_Reset(simple_kalman_t* kf)
+void Kalman_Reset(kalman_filter_t* kf)
 {
     kf->initialized = 0;
-    kf->x = 0;
-    kf->P = 10000;
+    kf->x = 0.0f;
+    kf->P = 1.0f;
 }
 
 /* =============================================================================
@@ -118,14 +120,14 @@ void Simple_Kalman_Reset(simple_kalman_t* kf)
  */
 
 /**
- * @brief Convert ADC value to voltage in millivolts (integer math only)
+ * @brief Convert ADC value to voltage in millivolts
  * @param adc_value: Raw ADC reading (0-4095)
  * @return Voltage in millivolts
  */
-int32_t ADC_To_Voltage_Simple(uint16_t adc_value)
+float ADC_To_Voltage(uint16_t adc_value)
 {
-    uint32_t vref = (current_range == VOLTAGE_RANGE_3V3) ? VREF_3V3 : VREF_5V;
-    return (((uint32_t)adc_value * vref) / ADC_RESOLUTION);
+    uint16_t vref = (current_range == VOLTAGE_RANGE_3V3) ? VREF_3V3 : VREF_5V;
+    return ((float)adc_value * vref) / ADC_RESOLUTION;
 }
 
 /**
@@ -135,7 +137,16 @@ int32_t ADC_To_Voltage_Simple(uint16_t adc_value)
 void Set_Voltage_Range(voltage_range_t range)
 {
     current_range = range;
-    Simple_Kalman_Reset(&voltage_filter);  // Reset filter when changing range
+    Kalman_Reset(&voltage_filter);  // Reset filter when changing range
+}
+
+/**
+ * @brief Get current voltage range setting
+ * @return Current voltage range
+ */
+voltage_range_t Get_Voltage_Range(void)
+{
+    return current_range;
 }
 
 /* =============================================================================
@@ -166,10 +177,14 @@ void GPIO_Config(void)
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
     
-    // Configure UART pins (PA9=TX)
+    // Configure UART pins (PA9=TX, PA10=RX)
     GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 }
 
@@ -184,7 +199,7 @@ void UART_Config(void)
     USART_InitStructure.USART_StopBits = USART_StopBits_1;
     USART_InitStructure.USART_Parity = USART_Parity_No;
     USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = USART_Mode_Tx;
+    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
     USART_Init(USART1, &USART_InitStructure);
     
     USART_Cmd(USART1, ENABLE);
@@ -253,7 +268,21 @@ void ADC_Config(void)
 
 void System_Clock_Config(void)
 {
-    SystemInit(); // Use built-in system initialization
+    // Configure system clock to 72MHz
+    RCC_DeInit();
+    RCC_HSEConfig(RCC_HSE_ON);
+    if(RCC_WaitForHSEStartUp() == SUCCESS)
+    {
+        RCC_HCLKConfig(RCC_SYSCLK_Div1);    // AHB clock = SYSCLK
+        RCC_PCLK2Config(RCC_HCLK_Div1);     // APB2 clock = HCLK
+        RCC_PCLK1Config(RCC_HCLK_Div2);     // APB1 clock = HCLK/2
+        
+        RCC_PLLConfig(RCC_PLLSource_HSE_Div1, RCC_PLLMul_9); // 8MHz * 9 = 72MHz
+        RCC_PLLCmd(ENABLE);
+        while(RCC_GetFlagStatus(RCC_FLAG_PLLRDY) == RESET);
+        RCC_SYSCLKConfig(RCC_SYSCLKSource_PLLCLK);
+        while(RCC_GetSYSCLKSource() != 0x08);
+    }
 }
 
 /* =============================================================================
@@ -261,7 +290,7 @@ void System_Clock_Config(void)
  * =============================================================================
  */
 
-void UART_SendString(const char* str)
+void UART_SendString(char* str)
 {
     while(*str)
     {
@@ -270,64 +299,31 @@ void UART_SendString(const char* str)
     }
 }
 
-void UART_SendChar(char c)
-{
-    while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-    USART_SendData(USART1, c);
-}
-
-void UART_SendNumber(int32_t number)
-{
-    char buffer[12];
-    int i = 0;
-    uint8_t is_negative = 0;
-    
-    if (number < 0) {
-        is_negative = 1;
-        number = -number;
-    }
-    
-    // Convert to string (reverse order)
-    do {
-        buffer[i++] = '0' + (number % 10);
-        number /= 10;
-    } while (number > 0);
-    
-    if (is_negative) {
-        UART_SendChar('-');
-    }
-    
-    // Send digits in correct order
-    while (i > 0) {
-        UART_SendChar(buffer[--i]);
-    }
-}
-
 void Delay_ms(uint32_t ms)
 {
-    for(uint32_t i = 0; i < ms * 8000; i++); // Approximate delay for 72MHz
+    for(uint32_t i = 0; i < ms * 8000; i++); // Approximate delay
 }
 
 uint8_t Button_Pressed(void)
 {
     static uint8_t button_state = 1;  // Released state (pull-up)
-    static uint32_t debounce_counter = 0;
+    static uint32_t debounce_timer = 0;
     
     uint8_t current_state = GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_1);
     
-    if(current_state == 0 && button_state == 1 && debounce_counter == 0)
+    if(current_state == 0 && button_state == 1) // Button pressed
     {
-        button_state = 0;
-        debounce_counter = 1000; // Debounce counter
-        return 1;
+        if(debounce_timer == 0)
+        {
+            debounce_timer = 1;
+            button_state = 0;
+            return 1;
+        }
     }
     else if(current_state == 1)
     {
         button_state = 1;
-    }
-    
-    if(debounce_counter > 0) {
-        debounce_counter--;
+        debounce_timer = 0;
     }
     
     return 0;
@@ -362,19 +358,22 @@ int main(void)
     DMA_Config();
     ADC_Config();
     
-    // Initialize Simple Kalman filter
-    Simple_Kalman_Init(&voltage_filter, 1650); // 1.65V initial estimate
+    // Initialize Kalman filter
+    Kalman_Init(&voltage_filter, 1650.0f, 0.01f, 50.0f); // Initial: 1.65V, Q=0.01, R=50mV
     
     // Send startup message
-    UART_SendString("\r\n=== STM32 Simple Voltage Meter with Kalman Filter ===\r\n");
-    UART_SendString("Range: ");
-    UART_SendString((current_range == VOLTAGE_RANGE_3V3) ? "3.3V" : "5.0V");
-    UART_SendString(" | Press PA1 to switch\r\n");
-    UART_SendString("Format: Raw(mV) | Filtered(mV) | Noise\r\n\r\n");
+    sprintf(uart_buffer, "\r\n=== STM32 Voltage Meter with Kalman Filter ===\r\n");
+    UART_SendString(uart_buffer);
+    sprintf(uart_buffer, "Range: %s | Press button to switch\r\n", 
+            (current_range == VOLTAGE_RANGE_3V3) ? "3.3V" : "5.0V");
+    UART_SendString(uart_buffer);
+    sprintf(uart_buffer, "Format: Raw(mV) | Filtered(mV) | Noise\r\n\r\n");
+    UART_SendString(uart_buffer);
     
     // Start ADC conversions
     ADC_SoftwareStartConvCmd(ADC1, ENABLE);
     
+    uint32_t last_display_time = 0;
     uint32_t display_counter = 0;
     
     while(1)
@@ -392,7 +391,7 @@ int main(void)
                 Set_Voltage_Range(VOLTAGE_RANGE_3V3);
                 UART_SendString(">>> Switched to 3.3V range <<<\r\n");
             }
-            Delay_ms(200);
+            Delay_ms(200); // Debounce delay
         }
         
         // Process ADC data when buffer is filled
@@ -400,7 +399,7 @@ int main(void)
         {
             conversion_complete = 0;
             
-            // Calculate average of all samples in buffer
+            // Calculate average of all samples in buffer (for better accuracy)
             uint32_t sum = 0;
             for(int i = 0; i < ADC_BUFFER_SIZE; i++)
             {
@@ -408,13 +407,16 @@ int main(void)
             }
             uint16_t avg_adc = sum / ADC_BUFFER_SIZE;
             
-            // Convert to voltage (simple integer math)
-            raw_voltage_mv = ADC_To_Voltage_Simple(avg_adc);
+            // Convert to voltage
+            raw_voltage = ADC_To_Voltage(avg_adc);
             
-            // Apply Simple Kalman filter
-            filtered_voltage_mv = Simple_Kalman_Update(&voltage_filter, raw_voltage_mv);
+            // Apply Kalman filter
+            filtered_voltage = Kalman_Update(&voltage_filter, raw_voltage);
             
-            // Toggle LED every 10 measurements
+            // Calculate noise (difference between raw and filtered)
+            float noise = fabsf(raw_voltage - filtered_voltage);
+            
+            // Toggle LED every few measurements
             if(display_counter % 10 == 0)
             {
                 GPIO_WriteBit(GPIOC, GPIO_Pin_13, 
@@ -422,24 +424,15 @@ int main(void)
             }
         }
         
-        // Display results every few loops
-        if(display_counter++ >= 5)
+        // Display results every 100ms (approximately)
+        if(display_counter++ >= 5) // Adjust frequency as needed
         {
             display_counter = 0;
             
-            int32_t noise = (raw_voltage_mv > filtered_voltage_mv) ? 
-                           (raw_voltage_mv - filtered_voltage_mv) : 
-                           (filtered_voltage_mv - raw_voltage_mv);
-            
-            UART_SendString("Raw: ");
-            UART_SendNumber(raw_voltage_mv);
-            UART_SendString(" mV | Filtered: ");
-            UART_SendNumber(filtered_voltage_mv);
-            UART_SendString(" mV | Noise: ");
-            UART_SendNumber(noise);
-            UART_SendString(" mV | Range: ");
-            UART_SendString((current_range == VOLTAGE_RANGE_3V3) ? "3.3V" : "5.0V");
-            UART_SendString("\r\n");
+            sprintf(uart_buffer, "Raw: %4.0f mV | Filtered: %4.0f mV | Noise: %3.0f mV | Range: %s\r\n",
+                    raw_voltage, filtered_voltage, fabsf(raw_voltage - filtered_voltage),
+                    (current_range == VOLTAGE_RANGE_3V3) ? "3.3V" : "5.0V");
+            UART_SendString(uart_buffer);
         }
         
         Delay_ms(20); // Main loop delay

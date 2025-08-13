@@ -1,7 +1,11 @@
 /*
  * =============================================================================
- * Project: STM32F103 CAN Testing(SPL)
- * File: main.c
+ * Project: STM32F103 CAN Continuous Communication with DMA (SPL)
+ * File: can_normal_mode.c
+ * Description: Continuous CAN communication using DMA for both RX and UART TX
+ *              - CAN operates in normal mode for testing
+ *              - DMA transfers CAN RX data to memory buffer
+ *              - DMA transfers data from memory to UART TX for display
  * Author: hoangphuc540202@gmail.com
  * Github: https://github.com/hoangphuc540202
  * Date: August 2025
@@ -114,10 +118,10 @@ void CAN_Config(void)
     // Filter accepts all messages (no filtering)
     CAN_FilterInitStructure.CAN_FilterNumber = 0;          // Filter number 0
     CAN_FilterInitStructure.CAN_FilterMode = CAN_FilterMode_IdMask; // ID/Mask mode
-    CAN_FilterInitStructure.CAN_FilterScale = CAN_FilterScale_16bit; // 16-bit scale
-    CAN_FilterInitStructure.CAN_FilterIdHigh = 0x0123 << 5;     // Filter ID high
-    CAN_FilterInitStructure.CAN_FilterIdLow = 0x0000;      // Filter ID low 5bit
-    CAN_FilterInitStructure.CAN_FilterMaskIdHigh = 0xFFE0; // Mask high (accept all)
+    CAN_FilterInitStructure.CAN_FilterScale = CAN_FilterScale_32bit; // 32-bit scale
+    CAN_FilterInitStructure.CAN_FilterIdHigh = 0x0000;     // Filter ID high
+    CAN_FilterInitStructure.CAN_FilterIdLow = 0x0000;      // Filter ID low
+    CAN_FilterInitStructure.CAN_FilterMaskIdHigh = 0x0000; // Mask high (accept all)
     CAN_FilterInitStructure.CAN_FilterMaskIdLow = 0x0000;  // Mask low (accept all)
     CAN_FilterInitStructure.CAN_FilterFIFOAssignment = CAN_FIFO0; // Assign to FIFO0
     CAN_FilterInitStructure.CAN_FilterActivation = ENABLE; // Enable filter

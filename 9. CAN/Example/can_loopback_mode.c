@@ -108,9 +108,9 @@ void CAN_Config(void)
     // With APB1 = 36MHz: 1Mbps = 36MHz / (6 * (1 + 8 + 1)) = 36MHz / 60 = 600kbps
     // Adjusted for 1Mbps: Prescaler = 4
     CAN_InitStructure.CAN_SJW = CAN_SJW_1tq;               // Synchronization Jump Width
-    CAN_InitStructure.CAN_BS1 = CAN_BS1_8tq;               // Bit Segment 1
-    CAN_InitStructure.CAN_BS2 = CAN_BS2_1tq;               // Bit Segment 2
-    CAN_InitStructure.CAN_Prescaler = 4;                   // Prescaler for ~1Mbps
+    CAN_InitStructure.CAN_BS1 = CAN_BS1_3tq;               // Bit Segment 1
+    CAN_InitStructure.CAN_BS2 = CAN_BS2_4tq;               // Bit Segment 2
+    CAN_InitStructure.CAN_Prescaler = 9;                   // Prescaler for ~1Mbps
     CAN_Init(CAN1, &CAN_InitStructure);
 
     /* CAN Filter Configuration */

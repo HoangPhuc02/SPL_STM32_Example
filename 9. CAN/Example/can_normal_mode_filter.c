@@ -1,7 +1,11 @@
 /*
  * =============================================================================
- * Project: STM32F103 CAN Testing(SPL)
- * File: main.c
+ * Project: STM32F103 CAN Continuous Communication with DMA (SPL)
+ * File: can_normal_mode_filter.c
+ * Description: Continuous CAN communication using DMA for both RX and UART TX
+ *              - CAN operates in normal mode for testing
+ *              - DMA transfers CAN RX data to memory buffer
+ *              - DMA transfers data from memory to UART TX for display
  * Author: hoangphuc540202@gmail.com
  * Github: https://github.com/hoangphuc540202
  * Date: August 2025
