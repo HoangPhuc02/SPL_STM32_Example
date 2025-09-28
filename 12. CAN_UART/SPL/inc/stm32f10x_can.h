@@ -63,7 +63,7 @@ typedef struct
   
   uint8_t CAN_Mode;         /*!< Specifies the CAN operating mode.
                                  This parameter can be a value of 
-                                @ref CAN_Mode */
+                                @ref CAN_operating_mode */
 
   uint8_t CAN_SJW;          /*!< Specifies the maximum number of time quanta 
                                  the CAN hardware is allowed to lengthen or 

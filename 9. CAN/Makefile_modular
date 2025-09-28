@@ -1,0 +1,118 @@
+# Makefile for STM32F103 CAN Module Project
+# Author: hoangphuc540202@gmail.com
+# Date: August 2025
+
+# Target configuration
+TARGET = can_module_test
+MCU = cortex-m3
+
+# Directories
+SRCDIR = .
+SPLDIR = SPL
+INCDIR = .
+BUILDDIR = build
+
+# Source files - Use modular version
+SOURCES = main_modular.c \
+          can_module.c \
+          $(SPLDIR)/config.c \
+          startup_stm32f103.s
+
+# Include directories
+INCLUDES = -I$(INCDIR) \
+           -I$(INCDIR)/Core \
+           -I$(INCDIR)/$(SPLDIR)/inc \
+           -I$(INCDIR)/$(SPLDIR)
+
+# STM32F10x Standard Peripheral Library sources
+SPL_SOURCES = $(SPLDIR)/src/stm32f10x_rcc.c \
+              $(SPLDIR)/src/stm32f10x_gpio.c \
+              $(SPLDIR)/src/stm32f10x_can.c \
+              $(SPLDIR)/src/stm32f10x_usart.c \
+              $(SPLDIR)/src/stm32f10x_dma.c \
+              $(SPLDIR)/src/misc.c \
+              $(SPLDIR)/src/system_stm32f10x.c
+
+# Compiler and tools
+CC = arm-none-eabi-gcc
+OBJCOPY = arm-none-eabi-objcopy
+OBJDUMP = arm-none-eabi-objdump
+SIZE = arm-none-eabi-size
+
+# Compiler flags
+CFLAGS = -mcpu=$(MCU) -mthumb -mthumb-interwork \
+         -ffunction-sections -fdata-sections \
+         -g -O2 -Wall \
+         -DSTM32F10X_MD -DUSE_STDPERIPH_DRIVER \
+         $(INCLUDES)
+
+# Linker flags
+LDFLAGS = -mcpu=$(MCU) -mthumb -mthumb-interwork \
+          -ffunction-sections -fdata-sections \
+          -Wl,--gc-sections -Wl,-Map=$(BUILDDIR)/$(TARGET).map \
+          -T stm32f103.ld
+
+# Object files
+OBJECTS = $(SOURCES:%.c=$(BUILDDIR)/%.o)
+OBJECTS += $(SPL_SOURCES:%.c=$(BUILDDIR)/%.o)
+OBJECTS := $(OBJECTS:%.s=$(BUILDDIR)/%.o)
+
+# Default target
+all: $(BUILDDIR) $(BUILDDIR)/$(TARGET).elf $(BUILDDIR)/$(TARGET).hex $(BUILDDIR)/$(TARGET).bin
+
+# Create build directory
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
+	mkdir -p $(BUILDDIR)/$(SPLDIR)
+	mkdir -p $(BUILDDIR)/$(SPLDIR)/src
+
+# Compile C files
+$(BUILDDIR)/%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Compile assembly files
+$(BUILDDIR)/%.o: %.s
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Link
+$(BUILDDIR)/$(TARGET).elf: $(OBJECTS)
+	$(CC) $(LDFLAGS) $(OBJECTS) -o $@
+	$(SIZE) $@
+
+# Create hex file
+$(BUILDDIR)/$(TARGET).hex: $(BUILDDIR)/$(TARGET).elf
+	$(OBJCOPY) -O ihex $< $@
+
+# Create binary file
+$(BUILDDIR)/$(TARGET).bin: $(BUILDDIR)/$(TARGET).elf
+	$(OBJCOPY) -O binary $< $@
+
+# Clean
+clean:
+	rm -rf $(BUILDDIR)
+
+# Flash (using st-flash)
+flash: $(BUILDDIR)/$(TARGET).bin
+	st-flash write $(BUILDDIR)/$(TARGET).bin 0x8000000
+
+# Flash (using openocd)
+flash-openocd: $(BUILDDIR)/$(TARGET).hex
+	openocd -f interface/stlink-v2.cfg -f target/stm32f1x.cfg \
+	-c "program $(BUILDDIR)/$(TARGET).hex verify reset exit"
+
+# Debug info
+info:
+	@echo "Target: $(TARGET)"
+	@echo "MCU: $(MCU)"
+	@echo "Sources: $(SOURCES)"
+	@echo "Objects: $(OBJECTS)"
+
+# Generate disassembly
+disasm: $(BUILDDIR)/$(TARGET).elf
+	$(OBJDUMP) -d $< > $(BUILDDIR)/$(TARGET).disasm
+
+# Show size breakdown
+size: $(BUILDDIR)/$(TARGET).elf
+	$(SIZE) -A $<
+
+.PHONY: all clean flash flash-openocd info disasm size

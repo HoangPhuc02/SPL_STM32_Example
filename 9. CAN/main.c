@@ -1,39 +1,36 @@
 /*
  * =============================================================================
- * Project: STM32F103 CAN Testing(SPL)
+ * Project: STM32F103 CAN Testing(SPL) - Modular Design with Remote & Error Frames
  * File: main.c
  * Author: hoangphuc540202@gmail.com
  * Github: https://github.com/hoangphuc540202
  * Date: August 2025
  * 
- * IMPORTANT NOTE:
- * This file contains compilation errors due to missing include dependencies.
- * For a working example, please use main_simple.c which has been tested
- * and contains comprehensive comments.
- * 
- * To compile and run:
- * 1. Use main_simple.c instead of this file
- * 2. Or fix the include paths and library dependencies
- * 3. See CAN_DMA_DETAILED_EXPLANATION.md for complete documentation
+ * Description: Complete CAN implementation using modular design
+ *              Supports Data Frames, Remote Frames, and Error Frames
  * 
  * Hardware Setup:
  * - STM32F103C8T6 Blue Pill board
- * - CAN pins: PB8 (RX), PB9 (TX)
+ * - CAN pins: PA11 (RX), PA12 (TX)
  * - UART pins: PA9 (TX), PA10 (RX)
- * - System clock: 72MHz
+ * - Buttons: PA0 (Data), PA1 (Remote), PA2 (Error)
+ * - LED: PC13
  * 
- * DMA Channel Assignment:
- * - DMA1_Channel4: USART1_TX (Memory to Peripheral)
- * - DMA1_Channel5: USART1_RX (Peripheral to Memory) - Not used in this example
- * - Manual transfer from CAN FIFO to memory buffer
+ * Button Functions:
+ * - PA0: Send different types of data frames (Temperature, Humidity, Status)
+ * - PA1: Send remote frame requests
+ * - PA2: Simulate error conditions
  * 
- * Communication Flow:
- * 1. CAN transmits message in loopback mode
- * 2. CAN receives message via FIFO
- * 3. Data is copied to memory buffer
- * 4. DMA transfers buffer data to UART for display
+ * Features:
+ * - Modular CAN implementation
+ * - Data Frame transmission/reception
+ * - Remote Frame handling
+ * - Error Frame simulation and handling
+ * - Real-time statistics via UART
+ * - Comprehensive error monitoring
  * =============================================================================
  */
+
 #include "stm32f10x.h"
 #include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
@@ -42,339 +39,166 @@
 #include "stm32f10x_dma.h"
 #include "system_stm32f10x.h"
 #include "misc.h"
+#include "SPL/config.h"
+#include "can_module.h"
+#include <stdio.h>
+#include <string.h>
 
 /* ======================= Global Variables ======================= */
+volatile uint8_t uart_dma_busy = 0;
+uint8_t uart_tx_buffer[300];        // Increased buffer size for detailed messages
 
-CanTxMsg TxMessage;
-CanRxMsg RxMessage;
+/* Button debounce variables */
+uint8_t button_data_state = 0;
+uint8_t button_remote_state = 0;
+uint8_t button_error_state = 0;
 
-/* DMA Buffer for data transfer */
-uint8_t can_rx_buffer[8];           // Buffer to store CAN received data
-uint8_t uart_tx_buffer[50];         // Buffer for UART transmission (formatted data) - Increased size
-volatile uint8_t can_data_ready = 0; // Flag indicating new CAN data is available
-volatile uint8_t uart_dma_busy = 0;  // Flag indicating UART DMA is busy
+/* System state variables */
+uint32_t system_tick_counter = 0;
+uint8_t current_data_type = 0;       // Cycle through data types
+uint8_t display_stats_flag = 0;
 
-/* Transmission counter for continuous operation */
-uint32_t transmission_counter = 0;
-uint8_t gpio_last_read = 0;
+/* ======================= Button Handling Functions ======================= */
 
-/* ======================= CAN Configuration ======================= */
 /**
- * @brief Configure CAN1 peripheral in loopback mode
- * @note  Loopback mode allows testing without external CAN devices
- *        CAN TX and RX are internally connected
+ * @brief Reads button state with debouncing
+ * @param GPIOx: GPIO port (e.g., GPIOA, GPIOB, GPIOC)
+ * @param GPIO_Pin: GPIO pin number (e.g., GPIO_Pin_0, GPIO_Pin_1)
+ * @param button_state: Pointer to button state variable for debouncing
+ * @return 1 if button press detected, 0 otherwise
+ * 
+ * This function implements simple software debouncing by tracking the previous
+ * button state and only returning true on the falling edge (button press).
+ * Assumes buttons are active LOW (pressed = 0V, released = 3.3V).
  */
-void CAN_Config(void)
+uint8_t ReadButton(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin, uint8_t* button_state)
 {
-    CAN_InitTypeDef        CAN_InitStructure;
-    CAN_FilterInitTypeDef  CAN_FilterInitStructure;
-    GPIO_InitTypeDef GPIO_InitStructure;
-    NVIC_InitTypeDef NVIC_InitStructure;
-
-    /* Enable peripheral clocks */
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_CAN1, ENABLE);  // CAN1 clock
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE); // GPIOA clock for CAN pins
-
-    /* Configure CAN pins: A11 (RX) and A12 (TX) */
-    // CAN RX pin configuration (Input Pull-up)
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;          // Input with pull-up
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    // CAN TX pin configuration (Alternate Function Push-Pull)
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;        // Alternate function push-pull
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;      // High speed for reliable communication
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    /* Reset and initialize CAN peripheral */
-    CAN_DeInit(CAN1);
-    CAN_StructInit(&CAN_InitStructure);
-
-    /* CAN Cell Configuration */
-    CAN_InitStructure.CAN_TTCM = DISABLE;                  // Time Triggered Communication Mode
-    CAN_InitStructure.CAN_ABOM = DISABLE;                  // Automatic Bus-Off Management
-    CAN_InitStructure.CAN_AWUM = DISABLE;                  // Automatic Wake-Up Mode
-    CAN_InitStructure.CAN_NART = ENABLE;                  // Non-Automatic Retransmission
-    CAN_InitStructure.CAN_RFLM = DISABLE;                  // Receive FIFO Locked Mode
-    CAN_InitStructure.CAN_TXFP = ENABLE;                   // Transmit FIFO Priority
-    CAN_InitStructure.CAN_Mode = CAN_Mode_Normal;        // <<<< LOOPBACK MODE FOR TESTING
+    uint8_t button_pressed = 0;
     
-    /* CAN Bit Timing Configuration for 1Mbps */
-    // Formula: CAN_Baudrate = APB1_Clock / (Prescaler * (1 + BS1 + BS2))
-    // With APB1 = 36MHz: 1Mbps = 36MHz / (6 * (1 + 8 + 1)) = 36MHz / 60 = 600kbps
-    // Adjusted for 1Mbps: Prescaler = 4
-    CAN_InitStructure.CAN_SJW = CAN_SJW_1tq;               // Synchronization Jump Width
-    CAN_InitStructure.CAN_BS1 = CAN_BS1_3tq;               // Bit Segment 1
-    CAN_InitStructure.CAN_BS2 = CAN_BS2_4tq;               // Bit Segment 2
-    CAN_InitStructure.CAN_Prescaler = 9;                   // Prescaler for ~1Mbps
-    CAN_Init(CAN1, &CAN_InitStructure);
-
-    /* CAN Filter Configuration */
-    // Filter accepts all messages (no filtering)
-    CAN_FilterInitStructure.CAN_FilterNumber = 0;          // Filter number 0
-    CAN_FilterInitStructure.CAN_FilterMode = CAN_FilterMode_IdMask; // ID/Mask mode
-    CAN_FilterInitStructure.CAN_FilterScale = CAN_FilterScale_16bit; // 16-bit scale
-    CAN_FilterInitStructure.CAN_FilterIdHigh = 0x0123 << 5;     // Filter ID high
-    CAN_FilterInitStructure.CAN_FilterIdLow = 0x0000;      // Filter ID low 5bit
-    CAN_FilterInitStructure.CAN_FilterMaskIdHigh = 0xFFE0; // Mask high (accept all)
-    CAN_FilterInitStructure.CAN_FilterMaskIdLow = 0x0000;  // Mask low (accept all)
-    CAN_FilterInitStructure.CAN_FilterFIFOAssignment = CAN_FIFO0; // Assign to FIFO0
-    CAN_FilterInitStructure.CAN_FilterActivation = ENABLE; // Enable filter
-    CAN_FilterInit(&CAN_FilterInitStructure);
-
-    /* Configure CAN interrupt for message reception */
-    CAN_ITConfig(CAN1, CAN_IT_FMP0, ENABLE);              // FIFO0 message pending interrupt
-    
-    CAN_ITConfig(CAN1, CAN_IT_ERR, ENABLE);
-    CAN_ITConfig(CAN1, CAN_IT_BOF, ENABLE);  // Bus-Off
-    CAN_ITConfig(CAN1, CAN_IT_EPV, ENABLE);  // Error Passive
-    CAN_ITConfig(CAN1, CAN_IT_EWG, ENABLE);  // Error Warning
-    
-    /* Configure NVIC for CAN interrupt */
-    NVIC_InitStructure.NVIC_IRQChannel = USB_LP_CAN1_RX0_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&NVIC_InitStructure);
-
-    NVIC_InitStructure.NVIC_IRQChannel = CAN1_SCE_IRQn;
-    NVIC_Init(&NVIC_InitStructure);
-}
-
-/* ======================= CAN Transmission Function ======================= */
-/**
- * @brief Transmit CAN message continuously with incrementing data
- * @note  This function sends a new CAN message with updated data payload
- */
-void CAN_TransmitMessage(void)
-{
-    uint8_t TransmitMailbox;
-
-    /* Prepare CAN message with incrementing data */
-    TxMessage.StdId = 0x123;                               // Standard ID
-    TxMessage.ExtId = 0x00;                                // Extended ID (not used)
-    TxMessage.IDE = CAN_Id_Standard;                       // Use standard ID
-    TxMessage.RTR = CAN_RTR_Data;                          // Data frame (not remote)
-    TxMessage.DLC = 8;                                     // Data length: 8 bytes
-    
-    /* Fill data with incrementing pattern for testing */
-    TxMessage.Data[0] = (transmission_counter >> 24) & 0xFF; // Counter MSB
-    TxMessage.Data[1] = (transmission_counter >> 16) & 0xFF;
-    TxMessage.Data[2] = (transmission_counter >> 8) & 0xFF;
-    TxMessage.Data[3] = transmission_counter & 0xFF;         // Counter LSB
-    TxMessage.Data[4] = 0xAA;                                // Test pattern
-    TxMessage.Data[5] = 0x55;                                // Test pattern
-    TxMessage.Data[6] = 0xCC;                                // Test pattern
-    TxMessage.Data[7] = 0x33;                                // Test pattern
-
-    /* Transmit the message */
-    TransmitMailbox = CAN_Transmit(CAN1, &TxMessage);
-    
-    /* Wait for transmission completion */
-    while ((CAN_TransmitStatus(CAN1, TransmitMailbox) != CAN_TxStatus_Ok));
-    
-    /* Increment transmission counter */
-    transmission_counter++;
-}
-
-/* ======================= UART Configuration ======================= */
-/**
- * @brief Configure USART1 for data transmission via DMA
- * @note  USART1 pins: PA9 (TX), PA10 (RX)
- *        Baud rate: 115200 bps for PC terminal communication
- */
-void UART_Config(void)
-{
-    GPIO_InitTypeDef GPIO_InitStructure;
-    USART_InitTypeDef USART_InitStructure;
-    NVIC_InitTypeDef NVIC_InitStructure;
-
-    /* Enable peripheral clocks */
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);  // GPIOA clock
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE); // USART1 clock
-
-    /* Configure USART1 pins: PA9 (TX) and PA10 (RX) */
-    // TX pin configuration (Alternate Function Push-Pull)
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;        // Alternate function push-pull
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;      // High speed
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-    
-    // RX pin configuration (Input Floating) 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;  // Input floating
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    /* USART1 configuration */
-    USART_InitStructure.USART_BaudRate = 115200;                    // 115200 bps
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;     // 8 data bits
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;         // 1 stop bit
-    USART_InitStructure.USART_Parity = USART_Parity_No;            // No parity
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None; // No flow control
-    USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx; // TX and RX enabled
-    USART_Init(USART1, &USART_InitStructure);
-    
-    /* Enable USART1 */
-    USART_Cmd(USART1, ENABLE);
-    
-    /* Enable USART1 DMA for transmission */
-    USART_DMACmd(USART1, USART_DMAReq_Tx, ENABLE);
-    
-    /* Configure DMA transfer complete interrupt */
-    NVIC_InitStructure.NVIC_IRQChannel = DMA1_Channel4_IRQn;       // DMA1 Channel4 for USART1_TX
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&NVIC_InitStructure);
-}
-
-/* ======================= DMA Configuration ======================= */
-/**
- * @brief Configure DMA for UART TX data transmission
- * @note  DMA1_Channel4 is used for USART1_TX (Memory to Peripheral)
- *        This enables automatic data transfer from memory buffer to UART
- */
-void DMA_Config(void)
-{
-    DMA_InitTypeDef DMA_InitStructure;
-
-    /* Enable DMA1 clock */
-    RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
-
-    /* Configure DMA1 Channel4 for USART1_TX */
-    DMA_DeInit(DMA1_Channel4);
-    DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&USART1->DR;        // USART1 data register
-    DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)uart_tx_buffer;         // Memory buffer address
-    DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralDST;                       // Memory to Peripheral
-    DMA_InitStructure.DMA_BufferSize = 0;                                    // Will be set dynamically
-    DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;         // Peripheral address fixed
-    DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;                  // Memory address increments
-    DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;  // 8-bit peripheral data
-    DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;          // 8-bit memory data
-    DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;                            // Normal mode (not circular)
-    DMA_InitStructure.DMA_Priority = DMA_Priority_High;                      // High priority
-    DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;                             // Not memory-to-memory
-    DMA_Init(DMA1_Channel4, &DMA_InitStructure);
-
-    /* Enable DMA transfer complete interrupt */
-    DMA_ITConfig(DMA1_Channel4, DMA_IT_TC, ENABLE);                          // Transfer complete interrupt
-}
-
-/*=========================GPIO Config===============================*/
-void GPIO_Config(void)
-{
-    GPIO_InitTypeDef GPIO_InitStructure;
-
-    /* Enable GPIOA clock */
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC, ENABLE);
-
-    /* Configure PA0 (ADC input) */
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;  // Input floating mode
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-    
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;  // Push-pull output mode
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(GPIOC, &GPIO_InitStructure);
-
-    GPIO_SetBits(GPIOC, GPIO_Pin_13); // Set PC13 high (LED off)
-}
-
-/* ======================= Utility Functions ======================= */
-/**
- * @brief Format CAN data into a readable string for UART transmission
- * @param rx_data: Pointer to received CAN data
- * @param counter: Message counter for identification
- * @return Length of formatted string
- */
-uint8_t Format_CAN_Data_For_UART(uint8_t* rx_data, uint32_t counter)
-{
-    uint8_t length = 0;
-    const uint8_t BUFFER_MAX = sizeof(uart_tx_buffer) - 1; // Reserve 1 byte for safety
-    
-    /* Format: "MSG:0001 DATA:AB CD EF 12 34 56 78 90\r\n" */
-    /* Add message header */
-    if (length + 4 >= BUFFER_MAX) return length; // Check bounds
-    uart_tx_buffer[length++] = 'M';
-    uart_tx_buffer[length++] = 'S';
-    uart_tx_buffer[length++] = 'G';
-    uart_tx_buffer[length++] = ':';
-    
-    /* Add counter (4 digits hex) */
-    if (length + 4 >= BUFFER_MAX) return length; // Check bounds
-    uart_tx_buffer[length++] = ((counter >> 12) & 0x0F) < 10 ? 
-                               '0' + ((counter >> 12) & 0x0F) : 
-                               'A' + ((counter >> 12) & 0x0F) - 10;
-    uart_tx_buffer[length++] = ((counter >> 8) & 0x0F) < 10 ? 
-                               '0' + ((counter >> 8) & 0x0F) : 
-                               'A' + ((counter >> 8) & 0x0F) - 10;
-    uart_tx_buffer[length++] = ((counter >> 4) & 0x0F) < 10 ? 
-                               '0' + ((counter >> 4) & 0x0F) : 
-                               'A' + ((counter >> 4) & 0x0F) - 10;
-    uart_tx_buffer[length++] = (counter & 0x0F) < 10 ? 
-                               '0' + (counter & 0x0F) : 
-                               'A' + (counter & 0x0F) - 10;
-    
-    /* Add data header */
-    if (length + 6 >= BUFFER_MAX) return length; // Check bounds
-    uart_tx_buffer[length++] = ' ';
-    uart_tx_buffer[length++] = 'D';
-    uart_tx_buffer[length++] = 'A';
-    uart_tx_buffer[length++] = 'T';
-    uart_tx_buffer[length++] = 'A';
-    uart_tx_buffer[length++] = ':';
-    
-    /* Add data bytes in hex format */
-    for (uint8_t i = 0; i < 8; i++) {
-        if (length + 2 >= BUFFER_MAX) return length; // Check bounds for 2 hex chars
-        uart_tx_buffer[length++] = (rx_data[i] >> 4) < 10 ? 
-                                   '0' + (rx_data[i] >> 4) : 
-                                   'A' + (rx_data[i] >> 4) - 10;
-        uart_tx_buffer[length++] = (rx_data[i] & 0x0F) < 10 ? 
-                                   '0' + (rx_data[i] & 0x0F) : 
-                                   'A' + (rx_data[i] & 0x0F) - 10;
-        if (i < 7) {
-            if (length + 1 >= BUFFER_MAX) return length; // Check bounds for space
-            uart_tx_buffer[length++] = ' ';  // Space between bytes
+    if (GPIO_ReadInputDataBit(GPIOx, GPIO_Pin) == Bit_RESET) {
+        if (*button_state == 0) {
+            *button_state = 1;
+            button_pressed = 1;
         }
+    } else {
+        *button_state = 0;
     }
     
-    /* Add line ending */
-    if (length + 2 >= BUFFER_MAX) return length; // Check bounds
-    uart_tx_buffer[length++] = '\r';
-    uart_tx_buffer[length++] = '\n';
-    
-    return length;
+    return button_pressed;
 }
 
+/* ======================= UART DMA Functions ======================= */
+
 /**
- * @brief Start DMA transmission of UART data
+ * @brief Initiates UART transmission using DMA
  * @param data_length: Number of bytes to transmit
+ * 
+ * This function configures and starts DMA transmission for UART.
+ * It waits for any ongoing transmission to complete before starting
+ * a new one, then reloads the DMA counter and enables the channel.
  */
 void Start_UART_DMA_Transmission(uint16_t data_length)
 {
-    /* Wait for previous transmission to complete */
     while (uart_dma_busy);
-    
-    /* Set DMA busy flag */
     uart_dma_busy = 1;
-    
-    /* Disable DMA channel */
     DMA_Cmd(DMA1_Channel4, DISABLE);
-    
-    /* Set new buffer size */
     DMA1_Channel4->CNDTR = data_length;
-    
-    /* Enable DMA channel to start transmission */
     DMA_Cmd(DMA1_Channel4, ENABLE);
 }
 
 /**
- * @brief Simple delay function
- * @param delay: Delay count (approximate)
+ * @brief Sends debug message via UART using DMA
+ * @param message: Null-terminated string to send
+ * 
+ * This function copies the message to the UART buffer, adds CRLF line
+ * endings for proper terminal display, and initiates DMA transmission.
+ * Includes buffer overflow protection.
+ */
+void SendDebugMessage(const char* message)
+{
+    uint16_t length = strlen(message);
+    if (length > sizeof(uart_tx_buffer) - 3) {
+        length = sizeof(uart_tx_buffer) - 3;
+    }
+    
+    strcpy((char*)uart_tx_buffer, message);
+    strcat((char*)uart_tx_buffer, "\r\n");
+    
+    Start_UART_DMA_Transmission(strlen((char*)uart_tx_buffer));
+}
+
+/* ======================= CAN Callback Functions ======================= */
+
+/**
+ * @brief Callback function for received CAN data frames
+ * @param msg: Pointer to received CAN message structure
+ * 
+ * This callback is triggered when a CAN data frame is received.
+ * It formats the message for debugging output via UART and toggles
+ * the LED as a visual indication of data frame reception.
+ */
+void CAN_DataFrameReceived_Callback(CAN_Message_t* msg)
+{
+    // Format and send data frame info via UART
+    uint16_t length = CAN_FormatMessageForDebug(msg, uart_tx_buffer, sizeof(uart_tx_buffer));
+    Start_UART_DMA_Transmission(length);
+    
+    // Toggle LED on data frame receive
+    GPIOC->ODR ^= GPIO_Pin_13;
+}
+
+/**
+ * @brief Callback function for received CAN remote frames
+ * @param id: CAN message identifier of the remote frame
+ * @param dlc: Data Length Code (requested data length)
+ * 
+ * This callback is triggered when a CAN remote frame is received.
+ * Remote frames are requests for data - no actual data is included.
+ * The function sends debug info via UART and blinks LED rapidly.
+ */
+void CAN_RemoteFrameReceived_Callback(CAN_MessageID_t id, uint8_t dlc)
+{
+    // Create a message for remote frame
+    sprintf((char*)uart_tx_buffer, "REMOTE REQ: ID=0x%03X DLC=%d\r\n", (unsigned int)id, dlc);
+    Start_UART_DMA_Transmission(strlen((char*)uart_tx_buffer));
+    
+    // Fast LED blink for remote frame
+    for (int i = 0; i < 4; i++) {
+        GPIOC->ODR ^= GPIO_Pin_13;
+        Delay(50000);
+    }
+}
+
+/**
+ * @brief Callback function for CAN error detection
+ * @param error_type: Type of CAN error detected (enumerated type)
+ * 
+ * This callback is triggered when CAN errors are detected.
+ * It translates error codes to human-readable strings and sends
+ * error information via UART. Keeps LED on to indicate error state.
+ */
+void CAN_ErrorDetected_Callback(CAN_ErrorType_t error_type)
+{
+    const char* error_names[] = {
+        "NONE", "STUFF", "FORM", "ACK", "BIT_REC", "BIT_DOM", "CRC", "BUS_OFF", "PASSIVE"
+    };
+    
+    sprintf((char*)uart_tx_buffer, "CAN ERROR: %s\r\n", error_names[error_type]);
+    Start_UART_DMA_Transmission(strlen((char*)uart_tx_buffer));
+    
+    // Keep LED on for errors
+    GPIO_ResetBits(GPIOC, GPIO_Pin_13);
+}
+
+/* ======================= Utility Functions ======================= */
+
+/**
+ * @brief Simple software delay function
+ * @param delay: Number of loop iterations for delay
+ * 
+ * This is a blocking delay function that burns CPU cycles.
+ * The actual time depends on system clock frequency and compiler
+ * optimization. Used for simple timing where precision isn't critical.
  */
 void Delay(uint32_t delay)
 {
@@ -382,146 +206,305 @@ void Delay(uint32_t delay)
 }
 
 /**
- * @brief Debug function to check buffer usage and variable integrity
- * @note  This function helps verify that buffer overflow is not occurring
+ * @brief Displays comprehensive system status via UART
+ * 
+ * This function retrieves and displays current CAN system statistics
+ * including transmission/reception counts, error counts, sensor data,
+ * and system state. Useful for debugging and system monitoring.
  */
-void Debug_Check_Buffer_Integrity(void)
+void DisplaySystemInfo(void)
 {
-    // Check if uart_dma_busy has been corrupted
-    if (uart_dma_busy > 1) {
-        // Buffer overflow detected!
-        GPIO_ResetBits(GPIOC, GPIO_Pin_13); // Set PC13 low (LED on)
-        uart_dma_busy = 0; // Reset to safe value
-        // You could add a breakpoint here or send error message
-    }
+    CAN_Statistics_t* stats = CAN_GetStatistics();
+    CAN_SensorData_t* sensor = CAN_GetSensorData();
+    
+    sprintf((char*)uart_tx_buffer, 
+            "=== CAN System Status ===\r\n"
+            "TX: %lu, RX: %lu, Remote TX: %lu, Remote RX: %lu\r\n"
+            "Errors: %lu, Bus-Off: %lu\r\n"
+            "Temperature: %lu.%02lu°C, Humidity: %lu.%02lu%%\r\n"
+            "Counter: %lu, Last Error: %d\r\n"
+            "========================\r\n",
+            stats->tx_count, stats->rx_count, 
+            stats->remote_tx_count, stats->remote_rx_count,
+            stats->error_count, stats->bus_off_count,
+            sensor->temperature / 100, sensor->temperature % 100,
+            sensor->humidity / 100, sensor->humidity % 100,
+            sensor->transmission_counter, sensor->last_error);
+    
+    Start_UART_DMA_Transmission(strlen((char*)uart_tx_buffer));
 }
 
+/**
+ * @brief Processes data frame button press (PA0)
+ * 
+ * This function cycles through different types of CAN data frames:
+ * - Temperature data frame
+ * - Humidity data frame  
+ * - Status data frame
+ * Each button press sends the next type in sequence and updates sensor data.
+ */
+void ProcessDataFrameButton(void)
+{
+    static uint8_t data_type_cycle = 0;
+    
+    switch(data_type_cycle) {
+        case 0:
+            CAN_SendDataFrame(CAN_ID_TEMPERATURE, CAN_DATA_TEMPERATURE, NULL, 8);
+            SendDebugMessage("Sent: Temperature Data Frame");
+            break;
+        case 1:
+            CAN_SendDataFrame(CAN_ID_HUMIDITY, CAN_DATA_HUMIDITY, NULL, 8);
+            SendDebugMessage("Sent: Humidity Data Frame");
+            break;
+        case 2:
+            CAN_SendDataFrame(CAN_ID_STATUS, CAN_DATA_STATUS, NULL, 8);
+            SendDebugMessage("Sent: Status Data Frame");
+            break;
+    }
+    
+    data_type_cycle = (data_type_cycle + 1) % 3;
+    CAN_UpdateSensorData(); // Update sensor values
+}
+
+/**
+ * @brief Processes remote frame button press (PA1)
+ * 
+ * This function cycles through different types of CAN remote frame requests:
+ * - Temperature data request
+ * - Humidity data request
+ * - Status data request
+ * Remote frames are used to request specific data from other CAN nodes.
+ */
+void ProcessRemoteFrameButton(void)
+{
+    static uint8_t remote_type_cycle = 0;
+    
+    switch(remote_type_cycle) {
+        case 0:
+            CAN_SendRemoteFrame(CAN_ID_TEMPERATURE, 8);
+            SendDebugMessage("Sent: Remote Request for Temperature");
+            break;
+        case 1:
+            CAN_SendRemoteFrame(CAN_ID_HUMIDITY, 8);
+            SendDebugMessage("Sent: Remote Request for Humidity");
+            break;
+        case 2:
+            CAN_SendRemoteFrame(CAN_ID_STATUS, 8);
+            SendDebugMessage("Sent: Remote Request for Status");
+            break;
+    }
+    
+    remote_type_cycle = (remote_type_cycle + 1) % 3;
+}
+
+/**
+ * @brief Processes error frame button press (PA2)
+ * 
+ * This function cycles through different types of CAN error simulations:
+ * - Stuff error (bit stuffing violation)
+ * - Form error (frame format violation)
+ * - Acknowledgment error (no ACK received)
+ * - CRC error (checksum mismatch)
+ * - Error passive state
+ * Used for testing error handling and recovery mechanisms.
+ */
+void ProcessErrorFrameButton(void)
+{
+    static uint8_t error_type_cycle = 0;
+    CAN_ErrorType_t error_types[] = {
+        CAN_ERROR_STUFF, CAN_ERROR_FORM, CAN_ERROR_ACK, 
+        CAN_ERROR_CRC, CAN_ERROR_PASSIVE
+    };
+    
+    CAN_SendErrorFrame(error_types[error_type_cycle]);
+    
+    sprintf((char*)uart_tx_buffer, "Sent: Error Frame Type %d\r\n", error_types[error_type_cycle]);
+    Start_UART_DMA_Transmission(strlen((char*)uart_tx_buffer));
+    
+    error_type_cycle = (error_type_cycle + 1) % 5;
+}
+
+/* ======================= Enhanced GPIO Configuration ======================= */
+
+/**
+ * @brief Configures GPIO pins for buttons and LED
+ * 
+ * This function initializes:
+ * - PA0, PA1, PA2 as input pins with internal pull-up resistors (buttons)
+ * - PC13 as push-pull output pin (onboard LED)
+ * Button pins are configured as active-LOW with pull-up resistors.
+ */
+void GPIO_Config_Extended(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure;
+
+    /* Enable GPIO clocks */
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC, ENABLE);
+
+    /* Configure button pins PA0, PA1, PA2 */
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;  // Input with pull-up
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    
+    /* Configure LED pin PC13 */
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;  // Push-pull output
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    GPIO_SetBits(GPIOC, GPIO_Pin_13); // LED off initially
+}
 
 /* ======================= Interrupt Handlers ======================= */
+
 /**
- * @brief CAN RX interrupt handler (FIFO0 message pending)
- * @note  This interrupt fires when a new CAN message is received
- *        The received data is copied to the buffer for DMA transmission
+ * @brief CAN RX FIFO 0 interrupt handler
+ * 
+ * This interrupt is triggered when a CAN message is received in FIFO 0.
+ * It reads the message from the FIFO and processes it using the CAN module.
+ * The interrupt flag is cleared to prevent continuous triggering.
  */
 void USB_LP_CAN1_RX0_IRQHandler(void)
 {
-    /* Check if FIFO0 message pending interrupt */
     if (CAN_GetITStatus(CAN1, CAN_IT_FMP0) == SET) {
-        /* Receive the CAN message */
+        CanRxMsg RxMessage;
         CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);
         
-        /* Copy received data to buffer */
-        for (uint8_t i = 0; i < 8; i++) {
-            can_rx_buffer[i] = RxMessage.Data[i];
-        }
+        // Process message using CAN module
+        CAN_ProcessReceivedMessage(&RxMessage);
         
-        /* Set flag indicating new data is available */
-        can_data_ready = 1;
-        
-        /* Clear the interrupt flag */
         CAN_ClearITPendingBit(CAN1, CAN_IT_FMP0);
     }
-
-
 }
 
-void CAN1_SCE_IRQHandler(void){
+/**
+ * @brief CAN status change and error interrupt handler
+ * 
+ * This interrupt handles CAN error conditions and status changes:
+ * - Bus errors (stuff, form, ACK, bit, CRC errors)
+ * - Bus-off condition (node disconnected from bus)
+ * - Error passive state (high error count)
+ * - Error warning (moderate error count)
+ */
+void CAN1_SCE_IRQHandler(void)
+{
+    // Check for various CAN errors using module function
+    CAN_CheckAndHandleErrors();
+    
+    // Clear all error interrupt flags
     if (CAN_GetITStatus(CAN1, CAN_IT_ERR) == SET) {
-        GPIOC->ODR ^= GPIO_Pin_13; // Toggle LED on error
         CAN_ClearITPendingBit(CAN1, CAN_IT_ERR);
     }
-
     if (CAN_GetITStatus(CAN1, CAN_IT_BOF) == SET) {
-        GPIOC->ODR ^= GPIO_Pin_13; // Toggle LED on error
         CAN_ClearITPendingBit(CAN1, CAN_IT_BOF);
     }
-
     if (CAN_GetITStatus(CAN1, CAN_IT_EPV) == SET) {
-        GPIOC->ODR ^= GPIO_Pin_13; // Toggle LED on error
         CAN_ClearITPendingBit(CAN1, CAN_IT_EPV);
     }
-
     if (CAN_GetITStatus(CAN1, CAN_IT_EWG) == SET) {
-        GPIOC->ODR ^= GPIO_Pin_13; // Toggle LED on error
         CAN_ClearITPendingBit(CAN1, CAN_IT_EWG);
     }
 }
 
 /**
- * @brief DMA1 Channel4 interrupt handler (USART1 TX complete)
- * @note  This interrupt fires when DMA transmission is complete
+ * @brief DMA Channel 4 transfer complete interrupt handler
+ * 
+ * This interrupt is triggered when UART DMA transmission is complete.
+ * It clears the busy flag to allow new transmissions and clears the
+ * interrupt flag. Channel 4 is used for USART1 TX DMA.
  */
 void DMA1_Channel4_IRQHandler(void)
 {
-    /* Check if transfer complete interrupt */
     if (DMA_GetITStatus(DMA1_IT_TC4) == SET) {
-        /* Clear DMA busy flag */
         uart_dma_busy = 0;
-        
-        /* Clear the interrupt flag */
         DMA_ClearITPendingBit(DMA1_IT_TC4);
     }
 }
 
 /* ======================= Main Function ======================= */
 /**
- * @brief Main application function
- * @note  Initializes all peripherals and runs continuous CAN communication
- *        
+ * @brief Main application function with enhanced CAN functionality
+ * 
  * Program Flow:
- * 1. Initialize system clock (72MHz)
- * 2. Configure DMA for UART transmission
- * 3. Configure UART for data display
- * 4. Configure CAN in loopback mode
- * 5. Continuously transmit CAN messages
- * 6. Process received CAN data and send via UART DMA
+ * 1. Initialize system and peripherals using config API
+ * 2. Initialize CAN module with extended features
+ * 3. Display startup message
+ * 4. Main loop:
+ *    - Handle button presses for different frame types
+ *    - Periodic system status display
+ *    - Error monitoring and handling
+ *    - Sensor data updates
+ * 
+ * The main loop continuously monitors button states, handles CAN operations,
+ * and performs periodic maintenance tasks like status display and error checking.
+ * This creates a complete CAN testing and demonstration system.
  */
 int main(void)
 {
     /* System Initialization */
-    SystemInit();                    // 1. Setup system clock to 72MHz
+    SystemInit();                    // Setup system clock to 72MHz
     
-    /* Peripheral Configuration */
-    GPIO_Config();
-    DMA_Config();                    // 2. Configure DMA for UART transmission
-    UART_Config();                   // 3. Configure USART1 for data display
-    CAN_Config();                    // 4. Configure CAN1 in loopback mode
-    GPIOC->ODR ^= GPIO_Pin_13; // Toggle LED on error
+    /* Initialize peripherals using existing config system */
+    GPIO_Config_Extended();          // Extended GPIO configuration for multiple buttons
+    DMA_Config();                    // Configure DMA for UART transmission
+    UART_Config();                   // Configure USART1 for debug output
+    
+    /* Initialize CAN module with enhanced features */
+    CAN_Module_Init();               // Initialize CAN module (uses CAN_Config internally)
+    
     /* Enable global interrupts */
     __enable_irq();
     
+    /* Startup indication */
+    GPIO_ResetBits(GPIOC, GPIO_Pin_13); // LED on
+    Delay(1000000);                      // 1 second delay
+    GPIO_SetBits(GPIOC, GPIO_Pin_13);    // LED off
+    
+    /* Send startup message */
+    SendDebugMessage("=== STM32 CAN Module Test Started ===");
+    SendDebugMessage("PA0: Data Frame, PA1: Remote Frame, PA2: Error Frame");
+    
+    /* Display initial system info */
+    DisplaySystemInfo();
+    
     /* Application Main Loop */
     while (1) {
-        /* Debug: Check buffer integrity */
-        Debug_Check_Buffer_Integrity();
-        
-        
-        /* Transmit CAN message with incrementing data */
-        if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == Bit_SET )
-        {
-            if(gpio_last_read == 0) {
-                gpio_last_read = 1; // Set flag to prevent multiple triggers
-                CAN_TransmitMessage();  // 5. Transmit CAN message
-            }
-            
-        }
-        else gpio_last_read = 0;
-        
-        
-        /* Check if new CAN data is available */
-        if (can_data_ready) {
-            /* Format CAN data for UART transmission */
-            uint8_t uart_length = Format_CAN_Data_For_UART(can_rx_buffer, transmission_counter - 1);
-            
-            /* Start DMA transmission to UART */
-            Start_UART_DMA_Transmission(uart_length);
-            
-            /* Clear the data ready flag */
-            can_data_ready = 0;
+        /* Button PA0: Send Data Frame */
+        if (ReadButton(GPIOA, GPIO_Pin_0, &button_data_state)) {
+            ProcessDataFrameButton();
         }
         
-        /* Delay between transmissions (approximately 1 second) */
-        Delay(100000);  // Adjust this value based on your requirements
+        /* Button PA1: Send Remote Frame */
+        if (ReadButton(GPIOA, GPIO_Pin_1, &button_remote_state)) {
+            ProcessRemoteFrameButton();
+        }
+        
+        /* Button PA2: Send Error Frame */
+        if (ReadButton(GPIOA, GPIO_Pin_2, &button_error_state)) {
+            ProcessErrorFrameButton();
+        }
+        
+        /* Periodic system status display (every ~10 seconds) */
+        system_tick_counter++;
+        if (system_tick_counter >= 100000) {  // Adjust based on loop frequency
+            DisplaySystemInfo();
+            system_tick_counter = 0;
+        }
+        
+        /* Update sensor data periodically */
+        if ((system_tick_counter % 5000) == 0) {
+            CAN_UpdateSensorData();
+        }
+        
+        /* Check for CAN errors */
+        if ((system_tick_counter % 1000) == 0) {
+            CAN_CheckAndHandleErrors();
+        }
+        
+        /* Main loop delay */
+        Delay(1000);  // Adjust this value based on your requirements
     }
 }
+
 /* ======================= End of File ======================= */
