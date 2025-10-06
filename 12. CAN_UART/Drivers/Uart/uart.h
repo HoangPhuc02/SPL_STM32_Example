@@ -210,6 +210,14 @@ void UART_SendChar(UART_HandleTypeDef *huart, char ch);
 void UART_SendString(UART_HandleTypeDef *huart, const char* str);
 
 /**
+ * @brief Send a number (polling)
+ * @param huart: Pointer to UART handle
+ * @param num: Number to send
+ * @return None
+ */
+void UART_SendNumber(UART_HandleTypeDef *huart, uint32_t num);
+
+/**
  * @brief Send formatted string (polling)
  * @param huart: Pointer to UART handle
  * @param format: Format string

@@ -5,14 +5,14 @@
 ################################################################################
 
 # Project name
-PROJECT_NAME = STM32F103_UART_Driver
+PROJECT_NAME = STM32F103_UART_CAN_Driver
 
 # Target microcontroller
 TARGET = STM32F103C8T6
 
 # Build directory
 BUILD_DIR = build
-
+SPL_DIR = SPL
 # Tools
 CC = arm-none-eabi-gcc
 OBJCOPY = arm-none-eabi-objcopy
@@ -40,6 +40,7 @@ INCLUDES += -IDrivers/Uart
 INCLUDES += -IDrivers/Systick
 INCLUDES += -ISPL/inc
 INCLUDES += -ICMSIS
+INCLUDES += -ICore
 
 # Linker flags
 LDFLAGS = -mcpu=cortex-m3
@@ -55,14 +56,10 @@ LDFLAGS += -Wl,--start-group -lc -lm -Wl,--end-group
 LINKER_SCRIPT = Linker/stm32f103.ld
 
 # Source files
-SOURCES = uart_example.c
+SOURCES = main.c
 SOURCES += Drivers/Uart/uart.c
 SOURCES += Drivers/Systick/systick.c
-SOURCES += SPL/src/stm32f10x_usart.c
-SOURCES += SPL/src/stm32f10x_gpio.c
-SOURCES += SPL/src/stm32f10x_rcc.c
-SOURCES += SPL/src/stm32f10x_dma.c
-SOURCES += SPL/src/misc.c
+SOURCES += $(wildcard $(SPL_DIR)/Src/*.c)
 SOURCES += CMSIS/system_stm32f10x.c
 SOURCES += Startup/startup_stm32f10x_md.s
 

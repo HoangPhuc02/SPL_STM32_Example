@@ -447,6 +447,20 @@ void UART_SendChar(UART_HandleTypeDef *huart, char ch)
  */
 void UART_SendString(UART_HandleTypeDef *huart, const char* str)
 {
+    const char* ptr = str;
+    while(*ptr)
+    {
+        UART_SendChar(huart, *ptr++);
+    }
+}
+
+/**
+ * @brief Send a number (polling)
+ */
+void UART_SendNumber(UART_HandleTypeDef *huart, uint32_t num)
+{
+    char str[12]; /* Enough for 32-bit integer */
+    snprintf(str, sizeof(str), "%lu", (unsigned long)num);
     while(*str)
     {
         UART_SendChar(huart, *str++);
